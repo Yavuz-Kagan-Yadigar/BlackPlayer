@@ -266,17 +266,42 @@ class ToggleSwitch(QWidget):
 #  Inline slider row (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 class JumpSlider(QSlider):
-    """Slider that jumps immediately to the click/touch position."""
+    """Slider that jumps immediately to click/touch position."""
+    def __init__(self, orientation=Qt.Orientation.Horizontal, parent=None):
+        super().__init__(orientation, parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents)
+        self._touch_active = False
+
     def _jump(self, x: float):
         v = QStyle.sliderValueFromPosition(
             self.minimum(), self.maximum(), int(max(0, x)), self.width())
         self.setValue(v)
+
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton: self._jump(e.position().x())
         super().mousePressEvent(e)
+
     def mouseMoveEvent(self, e):
         if e.buttons() & Qt.MouseButton.LeftButton: self._jump(e.position().x())
         super().mouseMoveEvent(e)
+
+    def event(self, e: QEvent) -> bool:
+        t = e.type()
+        if t == QEvent.Type.TouchBegin:
+            pts = e.points()
+            if pts:
+                self._touch_active = True
+                self._jump(pts[0].position().x())
+            e.accept(); return True
+        if t == QEvent.Type.TouchUpdate:
+            pts = e.points()
+            if pts and self._touch_active:
+                self._jump(pts[0].position().x())
+            e.accept(); return True
+        if t == QEvent.Type.TouchEnd:
+            self._touch_active = False
+            e.accept(); return True
+        return super().event(e)
 
 
 class SliderRow(QWidget):
@@ -324,9 +349,15 @@ class SettingsPopup(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName('settings_popup')
-        self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        # Tool window: stays open when OSK or other windows get focus
+        self.setWindowFlags(
+            Qt.WindowType.Tool |
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
         self.setAutoFillBackground(False)
+        # Close when user clicks outside the popup
+        QApplication.instance().installEventFilter(self)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 14, 16, 16); root.setSpacing(10)
@@ -453,14 +484,26 @@ class SettingsPopup(QFrame):
     def set_viz(self, v):    self._viz_sw.setChecked(v)
     def set_log(self, v):    self._log_sw.setChecked(v)
 
+    def eventFilter(self, obj, e: QEvent) -> bool:
+        """Close settings popup on mouse press outside it."""
+        if (self.isVisible() and
+                e.type() == QEvent.Type.MouseButtonPress and
+                QApplication.activePopupWidget() is None and
+                obj is not self and
+                not (isinstance(obj, QWidget) and self.isAncestorOf(obj)) and
+                not self.rect().contains(self.mapFromGlobal(
+                    e.globalPosition().toPoint()))):
+            self.hide()
+        return False  # never swallow events
+
     def show_above(self, btn: QWidget):
         self.adjustSize()
         gpos = btn.mapToGlobal(QPoint(0, 0))
-        x = gpos.x() + btn.width()//2 - self.width()//2
-        y = gpos.y() - self.height() - 6
+        x = gpos.x() + btn.width() // 2 - self.width() // 2
+        y = gpos.y() - self.height() - 6   # butonun hemen üstü, 6 piksel boşluk
         screen = QApplication.primaryScreen().availableGeometry()
-        x = max(screen.left()+4, min(x, screen.right()-self.width()-4))
-        y = max(screen.top()+4, y)
+        x = max(screen.left() + 4, min(x, screen.right() - self.width() - 4))
+        y = max(screen.top() + 4, y)
         self.move(x, y)
         self.show()
         self.raise_()
@@ -526,8 +569,9 @@ class EQSliderCell(QWidget):
         self._max = max_val
         self._val = val
 
+        self.setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(6, 9, 6, 9)
+        lay.setContentsMargins(6, 6, 6, 6)
         self._slider = JumpSlider(Qt.Orientation.Horizontal)
         self._slider.setRange(0, 1000)
         self._slider.setValue(self._to_slider(val))
@@ -590,6 +634,23 @@ class EQSliderCell(QWidget):
         self._band_idx = idx
 
 
+class TouchComboBox(QComboBox):
+    """QComboBox that won't close its popup immediately after opening on touch."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._popup_opened_ms = 0
+
+    def showPopup(self):
+        self._popup_opened_ms = QDateTime.currentMSecsSinceEpoch()
+        super().showPopup()
+
+    def hidePopup(self):
+        # Block immediate close within 400 ms of opening (touch double-fire)
+        if QDateTime.currentMSecsSinceEpoch() - self._popup_opened_ms < 400:
+            return
+        super().hidePopup()
+
+
 class _TableTouchScroll(QObject):
     """Touch filter: drag scrolls the table; short tap selects the row."""
     DRAG_THRESH = 12
@@ -637,9 +698,16 @@ class EqPopup(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName('eq_popup')
-        self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        # Tool window: does NOT auto-close when OSK or other windows take focus.
+        # User dismisses via the EQ button toggle or the ✕ close button.
+        self.setWindowFlags(
+            Qt.WindowType.Tool |
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
         self.setAutoFillBackground(False)
+        # Close when user clicks outside this window (anywhere in the app)
+        QApplication.instance().installEventFilter(self)
 
         self._bands = []          # list of (freq, gain, Q)
         self._enabled = True
@@ -659,30 +727,37 @@ class EqPopup(QFrame):
 
     def _build_ui(self):
         main = QVBoxLayout(self)
-        main.setContentsMargins(20, 18, 20, 18)
-        main.setSpacing(12)
+        main.setContentsMargins(16, 10, 16, 12)
+        main.setSpacing(7)
 
-        # Header
-        hdr = QLabel('PARAMETRIC EQ')
-        hdr.setObjectName('popup_title')
+        hdr = QLabel('PARAMETRIC EQ'); hdr.setObjectName('popup_title')
         main.addWidget(hdr)
 
         # Profile management
         prof_layout = QHBoxLayout()
         prof_label = QLabel('Profile:')
         prof_layout.addWidget(prof_label)
-        # "Loaded:" indicator
-        self._loaded_lbl = QLabel('Loaded: —')
-        self._loaded_lbl.setObjectName('setting_lbl')
-        self._loaded_lbl.setFixedWidth(160)
+        self._loaded_lbl = None   # removed from UI, kept for compat
 
         self._NEW = '＋ New'   # sentinel — always first item
-        self._profile_combo = QComboBox()
+        self._profile_combo = TouchComboBox()
         self._profile_combo.setEditable(True)
         self._profile_combo.setMinimumWidth(150)
         self._profile_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self._profile_combo.setCompleter(None)   # no autocomplete / no filter while typing
-        self._profile_combo.setStyleSheet("QComboBox { background-color: #000000; color: #f0f0f0; }")
+        self._profile_combo.setStyleSheet(
+            'QComboBox { background:#141414; color:#f0f0f0; border:1px solid #444;'
+            ' border-radius:6px; padding:4px 8px 4px 8px; min-height:30px; }'
+            'QComboBox:focus { border-color:' + ACC + '; }'
+            'QComboBox::drop-down { width:44px; border-left:1px solid #555;'
+            ' background:#222222; border-radius:0 6px 6px 0; }'
+            'QComboBox::down-arrow { width:16px; height:16px; }'
+            'QComboBox QAbstractItemView { background:#1e1e1e; color:#f0f0f0;'
+            ' selection-background-color:#282828; border:1px solid #444; }')
+        if self._profile_combo.lineEdit():
+            le = self._profile_combo.lineEdit()
+            le.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
+            le.setPlaceholderText('Profile name…')
         self._profile_combo.addItem(self._NEW)  # always first
         # ONLY load/react when user explicitly selects from dropdown
         self._profile_combo.activated.connect(self._on_profile_activated)
@@ -694,23 +769,17 @@ class EqPopup(QFrame):
         self._btn_del.clicked.connect(self._delete_profile)
         prof_layout.addWidget(self._btn_save)
         prof_layout.addWidget(self._btn_del)
-        prof_layout.addSpacing(12)
-        prof_layout.addWidget(self._loaded_lbl)
+        self._enable_sw = ToggleSwitch('EQ')
+        self._enable_sw.setChecked(True)
+        self._enable_sw.toggled.connect(self._on_enable_toggled)
+        prof_layout.addWidget(self._enable_sw)
+        self._btn_default = QPushButton('Set Default')
+        self._btn_default.clicked.connect(self._set_as_default)
+        prof_layout.addWidget(self._btn_default)
         prof_layout.addStretch()
         main.addLayout(prof_layout)
 
-        # Enable toggle and default button
-        ena_layout = QHBoxLayout()
-        self._enable_sw = ToggleSwitch('EQ Active')
-        self._enable_sw.setChecked(True)
-        self._enable_sw.toggled.connect(self._on_enable_toggled)
-        ena_layout.addWidget(self._enable_sw)
 
-        self._btn_default = QPushButton('Set as Default')
-        self._btn_default.clicked.connect(self._set_as_default)
-        ena_layout.addWidget(self._btn_default)
-        ena_layout.addStretch()
-        main.addLayout(ena_layout)
 
         # Frequency response graph
         self._graph = EQGraph(self)
@@ -843,7 +912,7 @@ class EqPopup(QFrame):
             self._bands = []
             self._current_profile = ''
             self._profile_combo.lineEdit().clear()
-            self._loaded_lbl.setText('Loaded: —')
+            if self._loaded_lbl: self._loaded_lbl.setText('Loaded: —')
             self._refresh_table()
             self._update_graph()
             self._apply_timer.start()
@@ -852,7 +921,7 @@ class EqPopup(QFrame):
             self._refresh_table()
             self._update_graph()
             self._current_profile = name
-            self._loaded_lbl.setText(f'Loaded: {name}')
+            if self._loaded_lbl: self._loaded_lbl.setText(f'Loaded: {name}')
             self._apply_timer.start()
 
     def _on_profile_selected(self, name):
@@ -870,7 +939,7 @@ class EqPopup(QFrame):
             self._profile_combo.insertItem(1, name)   # insert at 1, after ＋New
         self._profile_combo.setCurrentText(name)
         self._current_profile = name
-        self._loaded_lbl.setText(f'Loaded: {name}')
+        if self._loaded_lbl: self._loaded_lbl.setText(f'Loaded: {name}')
 
     def _delete_profile(self):
         name = self._profile_combo.currentText().strip()
@@ -883,7 +952,7 @@ class EqPopup(QFrame):
             self._profile_combo.setCurrentIndex(0)
             self._profile_combo.lineEdit().clear()
             self._current_profile = ''
-            self._loaded_lbl.setText('Loaded: —')
+            if self._loaded_lbl: self._loaded_lbl.setText('Loaded: —')
             self._bands = []
             self._refresh_table()
             self._update_graph()
@@ -904,7 +973,7 @@ class EqPopup(QFrame):
         self._update_graph()
         if name:
             self._current_profile = name
-            self._loaded_lbl.setText(f'Loaded: {name}')
+            if self._loaded_lbl: self._loaded_lbl.setText(f'Loaded: {name}')
         self.eq_changed.emit(self._bands, self._enabled)
 
     def set_profiles(self, profiles):
@@ -939,6 +1008,18 @@ class EqPopup(QFrame):
         self.move(x, y)
         self.show(); self.raise_()
         
+    def eventFilter(self, obj, e: QEvent) -> bool:
+        """Close EQ popup on click outside it (within the application)."""
+        if (self.isVisible() and
+                e.type() == QEvent.Type.MouseButtonPress and
+                QApplication.activePopupWidget() is None and
+                obj is not self and
+                not (isinstance(obj, QWidget) and self.isAncestorOf(obj)) and
+                not self.rect().contains(
+                    self.mapFromGlobal(e.globalPosition().toPoint()))):
+            self.hide()
+        return False
+
     def show_center(self):
         """Show popup in the center of the screen."""
         self.adjustSize()
@@ -2724,7 +2805,7 @@ class ControlBar(QFrame):
     # --- Settings popup ---
     def _ensure_settings_popup(self):
         if self._settings_popup is None:
-            pop = SettingsPopup()
+            pop = SettingsPopup(parent=self.window())
             pop.viz_toggled.connect(self._on_viz_toggle)
             pop.log_toggled.connect(self._on_log_toggle)
             pop.volume_changed.connect(lambda v: self._player.set_volume(v/100))
@@ -3360,7 +3441,13 @@ class MainWindow(QMainWindow):
     def changeEvent(self, e):
         super().changeEvent(e)
         if e.type() == QEvent.Type.ActivationChange:
-            self._ctrlbar.set_focus_paused(not self.isActiveWindow())
+            # Don't pause viz just because EQ/Settings Tool window is focused
+            eq_vis  = self._ctrlbar._eq_popup is not None and self._ctrlbar._eq_popup.isVisible()
+            set_vis = self._ctrlbar._settings_popup is not None and self._ctrlbar._settings_popup.isVisible()
+            if not self.isActiveWindow() and not eq_vis and not set_vis:
+                self._ctrlbar.set_focus_paused(True)
+            elif self.isActiveWindow() or eq_vis or set_vis:
+                self._ctrlbar.set_focus_paused(False)
 
     # --- Search / tab ---
     def _apply_search(self, q):
