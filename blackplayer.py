@@ -51,15 +51,14 @@ MIN_DB        = -70.0
 RAD           = 10   # global corner radius
 
 # EQ constants
-MAX_EQ_BANDS = 10
-EQ_FREQ_MIN  = 20.0
-EQ_FREQ_MAX  = 22000.0
-EQ_GAIN_MIN  = -10.0
-EQ_GAIN_MAX  = 10.0
-EQ_Q_MIN     = 0.1
-EQ_Q_MAX     = 10.0
+MAX_EQ_BANDS  = 10
+EQ_FREQ_MIN   = 20.0
+EQ_FREQ_MAX   = 22000.0
+EQ_GAIN_MIN   = -10.0
+EQ_GAIN_MAX   = 10.0
+EQ_Q_MIN      = 0.1
+EQ_Q_MAX      = 10.0
 EQ_GAIN_MAX_GRAPH = 10.0   # graph vertical range ±10 dB
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  Stylesheet (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -351,6 +350,9 @@ class SettingsPopup(QFrame):
     brightness_changed = pyqtSignal(int)   # 0..100
     cover_toggled      = pyqtSignal(bool)
     accent_changed     = pyqtSignal(str)
+    lyrics_fetch_toggled = pyqtSignal(bool)
+    cover_fetch_toggled = pyqtSignal()   # emitted when user clicks "Fetch Covers" button
+    tag_fetch_toggled    = pyqtSignal()   # emitted when user clicks "Fetch Tags" button
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -375,7 +377,7 @@ class SettingsPopup(QFrame):
 
         # Volume
         vol_row = QHBoxLayout(); vol_row.setSpacing(6)
-        vol_lbl = QLabel('🔈  Volume'); vol_lbl.setObjectName('setting_lbl')
+        vol_lbl = QLabel('Volume'); vol_lbl.setObjectName('setting_lbl')
         vol_lbl.setFixedWidth(70)
         vol_lbl.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self._vol = JumpSlider(Qt.Orientation.Horizontal)
@@ -390,20 +392,41 @@ class SettingsPopup(QFrame):
         vol_row.addWidget(vol_lbl); vol_row.addWidget(self._vol, 1); vol_row.addWidget(self._vol_lbl)
         root.addLayout(vol_row)
 
-        # VIZ + LOG + COVER
+        # Row 1: VIZ + LOG/LIN
         sw_row = QHBoxLayout(); sw_row.setSpacing(16)
         sw_row.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        self._viz_sw   = ToggleSwitch('VIZ',   self)
-        self._log_sw   = ToggleSwitch('LOG',   self)
-        self._cover_sw = ToggleSwitch('COVER', self)
+        self._viz_sw = ToggleSwitch('VIZ',     self)
+        self._log_sw = ToggleSwitch('LOG/LIN', self)
         self._viz_sw.setChecked(True); self._log_sw.setChecked(True)
-        self._cover_sw.setChecked(True)
         self._viz_sw.toggled.connect(self.viz_toggled)
         self._log_sw.toggled.connect(self.log_toggled)
-        self._cover_sw.toggled.connect(self.cover_toggled)
         sw_row.addWidget(self._viz_sw); sw_row.addWidget(self._log_sw)
-        sw_row.addWidget(self._cover_sw)
         root.addLayout(sw_row)
+
+        # Row 2: LYRICS FETCH + COVER
+        sw2 = QHBoxLayout(); sw2.setSpacing(16)
+        sw2.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self._lyrics_fetch_sw = ToggleSwitch('LYRICS FETCH', self)
+        self._lyrics_fetch_sw.setChecked(True)
+        self._lyrics_fetch_sw.toggled.connect(self.lyrics_fetch_toggled)
+        self._cover_sw = ToggleSwitch('COVER', self)
+        self._cover_sw.setChecked(True)
+        self._cover_sw.toggled.connect(self.cover_toggled)
+        sw2.addWidget(self._lyrics_fetch_sw); sw2.addWidget(self._cover_sw)
+        root.addLayout(sw2)
+
+        # Action buttons row: Fetch Covers + Fetch Tags 
+        action_row = QHBoxLayout(); action_row.setSpacing(8)
+        self._btn_fetch_covers = QPushButton('Fetch Covers…')
+        self._btn_fetch_covers.setFixedHeight(22)
+        self._btn_fetch_covers.clicked.connect(self.cover_fetch_toggled)
+        self._btn_fetch_tags = QPushButton('Fetch Tags…')
+        self._btn_fetch_tags.setFixedHeight(22)
+        self._btn_fetch_tags.clicked.connect(self.tag_fetch_toggled)
+        action_row.addWidget(self._btn_fetch_covers)
+        action_row.addWidget(self._btn_fetch_tags)
+        root.addLayout(action_row)
+        root.addSpacing(16)
 
         # Delay
         self._delay_row = SliderRow('Delay', 0, 1000, 0, lambda v: f'{v}ms')
@@ -437,6 +460,7 @@ class SettingsPopup(QFrame):
         root.addLayout(acc_row)
 
         self.setFixedWidth(310)
+        self.setMaximumHeight(600)
         self.adjustSize()
 
     def _pick_accent(self):
@@ -487,6 +511,10 @@ class SettingsPopup(QFrame):
         self._accent_hex.setText(v)
     def set_viz(self, v):    self._viz_sw.setChecked(v)
     def set_log(self, v):    self._log_sw.setChecked(v)
+    def lyrics_fetch_on(self) -> bool: return self._lyrics_fetch_sw.isChecked()
+    def set_lyrics_fetch(self, v): self._lyrics_fetch_sw.setChecked(v)
+    def cover_fetch_on(self) -> bool: return True   # always enabled; user triggers manually
+    def set_cover_fetch(self, v): pass              # no-op — kept for config compat
 
     def eventFilter(self, obj, e: QEvent) -> bool:
         """Close settings popup on mouse press outside it."""
@@ -514,10 +542,12 @@ class SettingsPopup(QFrame):
             self.setParent(win)
             self.setWindowFlags(Qt.WindowType.Widget)  # ensure child
         self.adjustSize()
-        # btn position relative to the main window
         btn_in_win = btn.mapTo(win, QPoint(0, 0))
         x = btn_in_win.x() + btn.width()//2 - self.width()//2
-        y = btn_in_win.y() - self.height() - 6
+        # Prefer above the button; if not enough room, show below
+        y_above = btn_in_win.y() - self.height() - 6
+        y_below = btn_in_win.y() + btn.height() + 6
+        y = y_above if y_above >= 4 else y_below
         # clamp inside window
         x = max(4, min(x, win.width()  - self.width()  - 4))
         y = max(4, min(y, win.height() - self.height() - 4))
@@ -530,46 +560,206 @@ class SettingsPopup(QFrame):
 #  Tag edit dialog
 # ══════════════════════════════════════════════════════════════════════════════
 class TagEditDialog(QDialog):
-    def __init__(self, track: 'Track', parent=None):
+    """Tag editor with cover art management."""
+    def __init__(self, track: 'Track', locked_paths: set = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle('Edit Tags')
         self.setModal(True)
-        self.setMinimumWidth(350)
-        self._track = track
+        self.setMinimumWidth(420)
+        self._track    = track
+        self._locked   = track.filepath in (locked_paths or set())
+        self._cover_action = 'keep'   # 'keep' | 'remove' | 'set'
+        self._new_cover_bytes: Optional[bytes] = None
+        self._locked_changed = False
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
 
-        # Title
-        title_lay = QHBoxLayout()
-        title_lay.addWidget(QLabel('Title:'))
-        self._title_edit = QLineEdit(track.title)
-        title_lay.addWidget(self._title_edit)
-        layout.addLayout(title_lay)
+        # ── Cover row ──────────────────────────────────────────────────────
+        cover_row = QHBoxLayout(); cover_row.setSpacing(12)
+        self._cover_lbl = QLabel()
+        self._cover_lbl.setFixedSize(96, 96)
+        self._cover_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._cover_lbl.setStyleSheet(
+            f'background:{BG3}; border:1px solid {B2}; border-radius:6px;')
+        # Load current cover
+        raw = extract_cover_bytes(track.filepath)
+        if raw:
+            pm = QPixmap(); pm.loadFromData(raw)
+            self._cover_lbl.setPixmap(
+                pm.scaled(96, 96, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                          Qt.TransformationMode.SmoothTransformation).copy(0,0,96,96))
+        else:
+            self._cover_lbl.setText('No Cover')
+            self._cover_lbl.setStyleSheet(
+                f'background:{BG3}; border:1px solid {B2}; border-radius:6px;'
+                f' color:{FG2}; font-size:11px;')
+        cover_row.addWidget(self._cover_lbl)
 
-        # Artist
-        artist_lay = QHBoxLayout()
-        artist_lay.addWidget(QLabel('Artist:'))
-        self._artist_edit = QLineEdit(track.artist)
-        artist_lay.addWidget(self._artist_edit)
-        layout.addLayout(artist_lay)
+        cover_btns = QVBoxLayout(); cover_btns.setSpacing(4)
+        self._btn_cover_file   = QPushButton('Set from File…')
+        self._btn_cover_search = QPushButton('Search Cover…')
+        self._btn_cover_remove = QPushButton('Remove Cover')
+        self._btn_cover_lock   = QPushButton('Locked' if self._locked else 'Unlocked')
+        self._btn_cover_lock.setCheckable(True)
+        self._btn_cover_lock.setChecked(self._locked)
+        self._btn_cover_lock.setToolTip('Locked: auto-fetch will not replace this cover')
+        for b in (self._btn_cover_file, self._btn_cover_search,
+                  self._btn_cover_remove, self._btn_cover_lock):
+            b.setFixedHeight(24); cover_btns.addWidget(b)
+        # Tag fetch button below divider
+        div2 = QFrame(); div2.setFrameShape(QFrame.Shape.HLine)
+        div2.setStyleSheet(f'color:{BORD}; margin:2px 0;')
+        cover_btns.addWidget(div2)
+        self._btn_tag_fetch = QPushButton('Auto-fill Tags…')
+        self._btn_tag_fetch.setFixedHeight(24)
+        cover_btns.addWidget(self._btn_tag_fetch)
+        cover_btns.addStretch()
+        cover_row.addLayout(cover_btns)
+        layout.addLayout(cover_row)
 
-        # Album
-        album_lay = QHBoxLayout()
-        album_lay.addWidget(QLabel('Album:'))
-        self._album_edit = QLineEdit(track.album)
-        album_lay.addWidget(self._album_edit)
-        layout.addLayout(album_lay)
+        self._btn_cover_file.clicked.connect(self._pick_cover_file)
+        self._btn_cover_search.clicked.connect(self._search_cover_online)
+        self._btn_cover_remove.clicked.connect(self._remove_cover)
+        self._btn_cover_lock.toggled.connect(self._on_lock_toggled)
+        self._btn_tag_fetch.clicked.connect(self._fetch_tags_online)
 
-        # Buttons
+        # Divider
+        div = QFrame(); div.setFrameShape(QFrame.Shape.HLine)
+        div.setStyleSheet(f'color:{BORD};'); layout.addWidget(div)
+
+        # ── Text tags ──────────────────────────────────────────────────────
+        for label, attr in [('Title', 'title'), ('Artist', 'artist'), ('Album', 'album')]:
+            row = QHBoxLayout()
+            lbl = QLabel(f'{label}:'); lbl.setFixedWidth(50)
+            row.addWidget(lbl)
+            edit = QLineEdit(getattr(track, attr))
+            setattr(self, f'_{attr}_edit', edit)
+            row.addWidget(edit)
+            layout.addLayout(row)
+
         btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
                                    QDialogButtonBox.StandardButton.Cancel)
         btn_box.accepted.connect(self.accept)
         btn_box.rejected.connect(self.reject)
         layout.addWidget(btn_box)
 
+    def _pick_cover_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'Select Cover Image', '',
+            'Images (*.jpg *.jpeg *.png *.webp *.bmp)')
+        if not path: return
+        with open(path, 'rb') as f:
+            data = f.read()
+        pm = QPixmap()
+        if pm.loadFromData(data):
+            self._new_cover_bytes = data
+            self._cover_action = 'set'
+            self._cover_lbl.setPixmap(
+                pm.scaled(96, 96, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                          Qt.TransformationMode.SmoothTransformation).copy(0,0,96,96))
+            self._cover_lbl.setText('')
+
+    def _search_cover_online(self):
+        """Fetch cover from online sources for this specific track in a background thread."""
+        self._btn_cover_search.setEnabled(False)
+        self._btn_cover_search.setText('Searching…')
+        artist = self._artist_edit.text().strip() or self._track.artist
+        title  = self._title_edit.text().strip()  or self._track.title
+        album  = self._album_edit.text().strip()  or self._track.album
+
+        # Run network fetch in a daemon thread; update UI via QTimer
+        import concurrent.futures as _cf
+        result = [None]
+
+        def _fetch():
+            result[0] = fetch_cover_online(artist, title, album)
+
+        future = _cf.Future()
+        t = threading.Thread(target=_fetch, daemon=True)
+        t.start()
+
+        def _poll():
+            if t.is_alive():
+                QTimer.singleShot(200, _poll)
+                return
+            data = result[0]
+            self._btn_cover_search.setEnabled(True)
+            self._btn_cover_search.setText('Search Cover…')
+            if data:
+                pm = QPixmap()
+                if pm.loadFromData(data):
+                    self._new_cover_bytes = data
+                    self._cover_action    = 'set'
+                    self._cover_lbl.setPixmap(
+                        pm.scaled(96, 96,
+                                  Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                                  Qt.TransformationMode.SmoothTransformation).copy(0, 0, 96, 96))
+                    self._cover_lbl.setText('')
+                    self._cover_lbl.setStyleSheet(
+                        f'background:{BG3};border:1px solid {B2};border-radius:6px;')
+                else:
+                    self._cover_lbl.setText('Load error')
+            else:
+                self._btn_cover_search.setText('Not found')
+                QTimer.singleShot(2000,
+                    lambda: self._btn_cover_search.setText('Search Cover…'))
+
+        QTimer.singleShot(200, _poll)
+
+    def _fetch_tags_online(self):
+        """Look up missing title/artist/album for this track and fill the edit fields."""
+        self._btn_tag_fetch.setEnabled(False)
+        self._btn_tag_fetch.setText('Searching…')
+        artist = self._artist_edit.text().strip() or self._track.artist
+        title  = self._title_edit.text().strip()  or self._track.title or Path(self._track.filepath).stem
+
+        result = [{}]
+        def _fetch():
+            result[0] = lookup_tags_online(artist, title)
+
+        t = threading.Thread(target=_fetch, daemon=True)
+        t.start()
+
+        def _poll():
+            if t.is_alive():
+                QTimer.singleShot(200, _poll)
+                return
+            self._btn_tag_fetch.setEnabled(True)
+            tags = result[0]
+            if tags:
+                # Fill only empty fields
+                if not self._title_edit.text().strip()  and tags.get('title'):
+                    self._title_edit.setText(tags['title'])
+                if not self._artist_edit.text().strip() and tags.get('artist'):
+                    self._artist_edit.setText(tags['artist'])
+                if not self._album_edit.text().strip()  and tags.get('album'):
+                    self._album_edit.setText(tags['album'])
+                self._btn_tag_fetch.setText('Auto-fill Tags…')
+            else:
+                self._btn_tag_fetch.setText('Not found')
+                QTimer.singleShot(2000,
+                    lambda: self._btn_tag_fetch.setText('Auto-fill Tags…'))
+
+        QTimer.singleShot(200, _poll)
+
+    def _remove_cover(self):
+        self._cover_action = 'remove'
+        self._new_cover_bytes = None
+        self._cover_lbl.clear()
+        self._cover_lbl.setText('Removed')
+
+    def _on_lock_toggled(self, locked: bool):
+        self._locked = locked
+        self._locked_changed = True
+        self._btn_cover_lock.setText('Locked' if locked else 'Unlocked')
+
     def get_tags(self):
         return self._title_edit.text(), self._artist_edit.text(), self._album_edit.text()
+
+    def get_cover_result(self):
+        """Returns (action, bytes|None, locked)."""
+        return self._cover_action, self._new_cover_bytes, self._locked
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -651,6 +841,845 @@ class EQSliderCell(QWidget):
         self._band_idx = idx
 
 
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Cover art fetching + embedding
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _fetch_cover_itunes(artist: str, title: str) -> Optional[bytes]:
+    try:
+        q = _urlparse.quote(f'{artist} {title}')
+        d = _get_json(f'https://itunes.apple.com/search?term={q}'
+                      f'&media=music&entity=song&limit=5')
+        for item in d.get('results', []):
+            url = item.get('artworkUrl100', '')
+            if url:
+                url = url.replace('100x100bb', '600x600bb')
+                data = _get(url)
+                if isinstance(data, str): data = data.encode('latin1')
+                if data and len(data) > 1000: return data
+    except Exception: pass
+    return None
+
+def _fetch_cover_deezer(artist: str, title: str) -> Optional[bytes]:
+    try:
+        q = _urlparse.quote(f'artist:"{artist}" track:"{title}"')
+        d = _get_json(f'https://api.deezer.com/search?q={q}&limit=3')
+        for item in d.get('data', []):
+            url = item.get('album', {}).get('cover_xl', '') or \
+                  item.get('album', {}).get('cover_big', '')
+            if url:
+                data = _get(url)
+                if isinstance(data, str): data = data.encode('latin1')
+                if data and len(data) > 1000: return data
+    except Exception: pass
+    return None
+
+def _fetch_cover_musicbrainz(artist: str, album: str) -> Optional[bytes]:
+    try:
+        q = _urlparse.quote(f'artist:"{artist}" AND release:"{album}"')
+        d = _get_json(
+            f'https://musicbrainz.org/ws/2/release/?query={q}&limit=5&fmt=json',
+            headers={'Accept': 'application/json'})
+        for rel in d.get('releases', [])[:3]:
+            mbid = rel.get('id', '')
+            if not mbid: continue
+            url = f'https://coverartarchive.org/release/{mbid}/front-500'
+            try:
+                req = _urlreq.Request(url, headers={'User-Agent': 'BlackPlayer/2.0'})
+                with _urlreq.urlopen(req, timeout=8) as r:
+                    data = r.read()
+                if data and len(data) > 1000: return data
+            except Exception: pass
+    except Exception: pass
+    return None
+
+def _fetch_cover_lastfm(artist: str, album: str) -> Optional[bytes]:
+    # Uses public lastfm API with community key
+    try:
+        a = _urlparse.quote(artist); al = _urlparse.quote(album)
+        url = (f'https://ws.audioscrobbler.com/2.0/?method=album.getinfo'
+               f'&artist={a}&album={al}&api_key=f24e79dab45bed5e3d35c47e1f3e3bda&format=json')
+        d = _get_json(url)
+        images = d.get('album', {}).get('image', [])
+        for img in reversed(images):
+            img_url = img.get('#text', '')
+            if img_url and 'noimage' not in img_url:
+                data = _get(img_url)
+                if isinstance(data, str): data = data.encode('latin1')
+                if data and len(data) > 1000: return data
+    except Exception: pass
+    return None
+
+def fetch_cover_online(artist: str, title: str, album: str) -> Optional[bytes]:
+    """Try multiple sources, return raw image bytes or None."""
+    for fn in [
+        lambda: _fetch_cover_itunes(artist, title),
+        lambda: _fetch_cover_deezer(artist, title),
+        lambda: _fetch_cover_musicbrainz(artist, album),
+        lambda: _fetch_cover_lastfm(artist, album),
+    ]:
+        try:
+            data = fn()
+            if data: return data
+        except Exception: pass
+    return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Online tag / metadata lookup
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _lookup_tags_musicbrainz(artist: str, title: str) -> dict:
+    """Query MusicBrainz for recording metadata. Returns dict with keys:
+    title, artist, album, date. All values may be empty strings."""
+    try:
+        q = _urlparse.quote(f'recording:"{title}" AND artist:"{artist}"')
+        d = _get_json(
+            f'https://musicbrainz.org/ws/2/recording/?query={q}&limit=5&fmt=json',
+            headers={'Accept': 'application/json'})
+        for rec in d.get('recordings', [])[:5]:
+            t = rec.get('title', '').strip()
+            rels = rec.get('releases', [])
+            alb = rels[0].get('title', '').strip() if rels else ''
+            date = rels[0].get('date', '')[:4] if rels else ''
+            art_list = rec.get('artist-credit', [])
+            art = art_list[0].get('artist', {}).get('name', '').strip() if art_list else ''
+            if t or art:
+                return {'title': t, 'artist': art, 'album': alb, 'date': date}
+    except Exception:
+        pass
+    return {}
+
+
+def _lookup_tags_itunes(artist: str, title: str) -> dict:
+    """Query iTunes Search API for track metadata."""
+    try:
+        q = _urlparse.quote(f'{artist} {title}')
+        d = _get_json(
+            f'https://itunes.apple.com/search?term={q}&media=music&entity=song&limit=5')
+        for item in d.get('results', []):
+            return {
+                'title':  item.get('trackName', '').strip(),
+                'artist': item.get('artistName', '').strip(),
+                'album':  item.get('collectionName', '').strip(),
+                'date':   str(item.get('releaseDate', ''))[:4],
+            }
+    except Exception:
+        pass
+    return {}
+
+
+def _lookup_tags_lastfm(artist: str, title: str) -> dict:
+    """Query Last.fm track.getInfo for metadata."""
+    try:
+        a = _urlparse.quote(artist); t = _urlparse.quote(title)
+        url = (f'https://ws.audioscrobbler.com/2.0/?method=track.getinfo'
+               f'&artist={a}&track={t}&api_key=f24e79dab45bed5e3d35c47e1f3e3bda&format=json')
+        d = _get_json(url)
+        tr = d.get('track', {})
+        alb = tr.get('album', {}).get('title', '').strip()
+        return {
+            'title':  tr.get('name', '').strip(),
+            'artist': tr.get('artist', {}).get('name', '').strip() if isinstance(tr.get('artist'), dict) else tr.get('artist', '').strip(),
+            'album':  alb,
+            'date':   '',
+        }
+    except Exception:
+        pass
+    return {}
+
+
+def lookup_tags_online(artist: str, title: str) -> dict:
+    """Try multiple sources; return best result dict with title/artist/album keys.
+    Only fields that are non-empty in the result should be used to fill gaps."""
+    import concurrent.futures as _cf
+
+    results = [{}]
+    lock = threading.Lock()
+
+    def _try(fn):
+        try:
+            r = fn()
+            if r.get('album') or r.get('artist'):
+                with lock:
+                    # Merge: keep first non-empty value found per key
+                    for k, v in r.items():
+                        if v and not results[0].get(k):
+                            results[0][k] = v
+        except Exception:
+            pass
+
+    sources = [
+        lambda: _lookup_tags_musicbrainz(artist, title),
+        lambda: _lookup_tags_itunes(artist, title),
+        lambda: _lookup_tags_lastfm(artist, title),
+    ]
+    with _cf.ThreadPoolExecutor(max_workers=3) as pool:
+        _cf.wait([pool.submit(_try, fn) for fn in sources])
+
+    return results[0]
+
+
+def write_tags_to_file(fp: str, tags: dict) -> bool:
+    """Write title/artist/album from tags dict into the audio file. Returns True on success."""
+    try:
+        ext = Path(fp).suffix.lower()
+        af  = MutagenFile(fp, easy=False)
+        if af is None: return False
+        if ext == '.mp3':
+            if af.tags is None: af.add_tags()
+            if tags.get('title'):  af.tags['TIT2'] = tags['title']
+            if tags.get('artist'): af.tags['TPE1'] = tags['artist']
+            if tags.get('album'):  af.tags['TALB'] = tags['album']
+        elif ext in ('.flac', '.ogg', '.opus'):
+            if af.tags is None: af.add_tags()
+            if tags.get('title'):  af.tags['title']  = [tags['title']]
+            if tags.get('artist'): af.tags['artist'] = [tags['artist']]
+            if tags.get('album'):  af.tags['album']  = [tags['album']]
+        elif ext in ('.m4a', '.aac'):
+            if af.tags is None: af.add_tags()
+            if tags.get('title'):  af.tags['\xa9nam'] = [tags['title']]
+            if tags.get('artist'): af.tags['\xa9ART'] = [tags['artist']]
+            if tags.get('album'):  af.tags['\xa9alb'] = [tags['album']]
+        else:
+            return False
+        af.save()
+        return True
+    except Exception as e:
+        print(f'write_tags_to_file error: {e}')
+        return False
+
+
+def embed_cover_bytes(fp: str, data: bytes) -> bool:
+    """Write cover bytes into the audio file tags. Returns True on success."""
+    try:
+        ext = Path(fp).suffix.lower()
+        af  = MutagenFile(fp, easy=False)
+        if af is None: return False
+
+        if ext == '.mp3':
+            from mutagen.id3 import ID3, APIC
+            if af.tags is None: af.add_tags()
+            mime = 'image/jpeg' if data[:3] == b'\xff\xd8\xff' else 'image/png'
+            af.tags.delall('APIC')
+            af.tags.add(APIC(encoding=3, mime=mime, type=3,
+                             desc='Cover', data=data))
+
+        elif ext == '.flac':
+            from mutagen.flac import Picture
+            pic = Picture()
+            pic.type = 3; pic.mime = 'image/jpeg' if data[:3] == b'\xff\xd8\xff' else 'image/png'
+            pic.desc = 'Cover'; pic.data = data
+            af.clear_pictures(); af.add_picture(pic)
+
+        elif ext in ('.m4a', '.aac'):
+            from mutagen.mp4 import MP4Cover
+            fmt = MP4Cover.FORMAT_JPEG if data[:3] == b'\xff\xd8\xff' else MP4Cover.FORMAT_PNG
+            af.tags['covr'] = [MP4Cover(data, imageformat=fmt)]
+
+        elif ext in ('.ogg', '.opus'):
+            import base64
+            from mutagen.flac import Picture
+            pic = Picture()
+            pic.type = 3; pic.mime = 'image/jpeg' if data[:3] == b'\xff\xd8\xff' else 'image/png'
+            pic.desc = 'Cover'; pic.data = data
+            encoded = base64.b64encode(pic.write()).decode('ascii')
+            af.tags['metadata_block_picture'] = [encoded]
+        else:
+            return False
+
+        af.save(); return True
+    except Exception as e:
+        print(f'embed_cover_bytes error: {e}'); return False
+
+
+def embed_lyrics(fp: str, synced, plain: str) -> bool:
+    """Write lyrics into audio file tags. Returns True on success."""
+    try:
+        ext = Path(fp).suffix.lower()
+        af  = MutagenFile(fp, easy=False)
+        if af is None: return False
+
+        if synced:
+            lrc_lines = [f'[{ms//60000:02d}:{(ms%60000)/1000:05.2f}]{txt}'
+                         for ms, txt in synced]
+            lrc_text = '\n'.join(lrc_lines)
+        else:
+            lrc_text = None
+
+        text_to_write = lrc_text if lrc_text else plain
+
+        if ext == '.mp3':
+            from mutagen.id3 import USLT, SYLT, Encoding
+            if af.tags is None: af.add_tags()
+            af.tags.delall('USLT'); af.tags.delall('SYLT')
+            af.tags.add(USLT(encoding=3, lang='eng', desc='', text=text_to_write))
+
+        elif ext in ('.flac', '.ogg', '.opus'):
+            if af.tags is None: af.add_tags()
+            af.tags['LYRICS'] = [text_to_write]
+
+        elif ext in ('.m4a', '.aac'):
+            if af.tags is None: af.add_tags()
+            af.tags['\xa9lyr'] = [text_to_write]
+
+        else:
+            return False
+
+        af.save(); return True
+    except Exception as e:
+        print(f'embed_lyrics error: {e}'); return False
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Lyrics — fetch, parse, display
+# ══════════════════════════════════════════════════════════════════════════════
+import re          as _re
+import html        as _html
+import urllib.request as _urlreq
+import urllib.parse   as _urlparse
+
+
+# ── LRC parser ────────────────────────────────────────────────────────────────
+def _lrc_parse(text: str):
+    pat = _re.compile(r'\[(\d+):(\d+(?:\.\d+)?)\](.*)')
+    lines = []
+    for raw in text.splitlines():
+        m = pat.match(raw.strip())
+        if m:
+            mm, ss_str, txt = m.groups()
+            ms = int(mm) * 60000 + int(float(ss_str) * 1000)
+            lines.append((ms, txt.strip()))
+    return sorted(lines, key=lambda x: x[0]) if lines else None
+
+
+# ── Embedded tags ─────────────────────────────────────────────────────────────
+def _extract_embedded_lyrics(fp: str):
+    try:
+        af = MutagenFile(fp, easy=False)
+        if af is None or af.tags is None:
+            return None, None
+        ext = Path(fp).suffix.lower()
+        if ext == '.mp3':
+            from mutagen.id3 import USLT, SYLT
+            for tag in af.tags.values():
+                if isinstance(tag, SYLT):
+                    lines = sorted([(ms, t) for t, ms in tag.text if t.strip()],
+                                   key=lambda x: x[0])
+                    if lines: return lines, None
+            for tag in af.tags.values():
+                if isinstance(tag, USLT) and tag.text.strip():
+                    p = _lrc_parse(tag.text)
+                    return (p, None) if p else (None, tag.text.strip())
+        else:
+            tg = af.tags
+            for key in ('lyrics', 'LYRICS', 'unsyncedlyrics', 'UNSYNCEDLYRICS'):
+                v = tg.get(key)
+                if v:
+                    text = str(v[0]) if isinstance(v, list) else str(v)
+                    if text.strip():
+                        p = _lrc_parse(text)
+                        return (p, None) if p else (None, text.strip())
+    except Exception:
+        pass
+    return None, None
+
+
+# ── Network helpers ───────────────────────────────────────────────────────────
+def _get(url, timeout=8, headers=None):
+    h = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) BlackPlayer/2.0'}
+    if headers: h.update(headers)
+    req = _urlreq.Request(url, headers=h)
+    with _urlreq.urlopen(req, timeout=timeout) as r:
+        return r.read().decode('utf-8', errors='replace')
+
+def _get_json(url, timeout=8, headers=None):
+    return json.loads(_get(url, timeout, headers))
+
+
+# ── Source functions — each returns (synced|None, plain|None) or (None, text) ─
+
+def _src_lrclib_exact(artist, title, album, dur):
+    try:
+        p = _urlparse.urlencode({'artist_name': artist, 'track_name': title,
+                                  'album_name': album, 'duration': int(dur)})
+        d = _get_json(f'https://lrclib.net/api/get?{p}')
+        sl = d.get('syncedLyrics') or ''
+        pl = d.get('plainLyrics')  or ''
+        if sl.strip():
+            lrc = _lrc_parse(sl)
+            if lrc: return lrc, None
+        if pl.strip(): return None, pl.strip()
+    except Exception: pass
+    return None, None
+
+def _src_lrclib_search(artist, title):
+    try:
+        q = _urlparse.quote(f'{artist} {title}')
+        results = _get_json(f'https://lrclib.net/api/search?q={q}')
+        for item in results[:6]:
+            sl = item.get('syncedLyrics') or ''
+            pl = item.get('plainLyrics')  or ''
+            if sl.strip():
+                lrc = _lrc_parse(sl)
+                if lrc: return lrc, None
+            if pl.strip(): return None, pl.strip()
+    except Exception: pass
+    return None, None
+
+def _src_lyrics_ovh(artist, title):
+    try:
+        a = _urlparse.quote(artist); t = _urlparse.quote(title)
+        d = _get_json(f'https://api.lyrics.ovh/v1/{a}/{t}')
+        txt = (d.get('lyrics') or '').strip()
+        if txt: return None, txt
+    except Exception: pass
+    return None, None
+
+def _src_chartlyrics(artist, title):
+    try:
+        a = _urlparse.quote(artist); t = _urlparse.quote(title)
+        xml = _get(f'http://api.chartlyrics.com/apiv1.asmx/SearchLyricDirect?artist={a}&song={t}')
+        m = _re.search(r'<Lyric>(.*?)</Lyric>', xml, _re.DOTALL)
+        if m:
+            txt = _html.unescape(m.group(1)).strip()
+            if txt and len(txt) > 30: return None, txt
+    except Exception: pass
+    return None, None
+
+def _src_musixmatch(artist, title):
+    # Unofficial Musixmatch community token (no auth required for search)
+    try:
+        token = 'community'
+        a = _urlparse.quote(artist); t = _urlparse.quote(title)
+        base = 'https://api.musixmatch.com/ws/1.1'
+        # search track
+        d = _get_json(f'{base}/track.search?q_artist={a}&q_track={t}'
+                      f'&apikey={token}&page_size=3&f_has_lyrics=1')
+        items = (d.get('message', {}).get('body', {})
+                   .get('track_list', []))
+        for item in items[:3]:
+            tid = item.get('track', {}).get('track_id')
+            if not tid: continue
+            d2 = _get_json(f'{base}/track.lyrics.get?track_id={tid}&apikey={token}')
+            body = d2.get('message', {}).get('body', {})
+            lyr = body.get('lyrics', {}).get('lyrics_body', '').strip()
+            if lyr and '******* This Lyrics' not in lyr:
+                return None, lyr
+            # Also try subtitle (synced)
+            d3 = _get_json(f'{base}/track.subtitle.get?track_id={tid}&apikey={token}')
+            sub = (d3.get('message', {}).get('body', {})
+                      .get('subtitle', {}).get('subtitle_body', ''))
+            if sub.strip():
+                lrc = _lrc_parse(sub)
+                if lrc: return lrc, None
+    except Exception: pass
+    return None, None
+
+def _src_genius_search(artist, title):
+    # Genius web scraping — no API key
+    try:
+        q = _urlparse.quote(f'{artist} {title}')
+        html_txt = _get(f'https://genius.com/search?q={q}',
+                        headers={'Accept': 'text/html'})
+        # Find first hit URL
+        m = _re.search(r'"url":"(https://genius\.com/[^"]+lyrics[^"]*)"', html_txt)
+        if not m: return None, None
+        url = m.group(1)
+        page = _get(url, headers={'Accept': 'text/html'})
+        # Extract lyrics containers
+        parts = _re.findall(
+            r'<div[^>]*data-lyrics-container[^>]*>(.*?)</div>',
+            page, _re.DOTALL)
+        if not parts: return None, None
+        lines = []
+        for part in parts:
+            clean = _re.sub(r'<br\s*/?>', '\n', part)
+            clean = _re.sub(r'<[^>]+>', '', clean)
+            lines.append(_html.unescape(clean).strip())
+        txt = '\n'.join(lines).strip()
+        if txt and len(txt) > 30: return None, txt
+    except Exception: pass
+    return None, None
+
+def _src_azlyrics(artist, title):
+    try:
+        a = _re.sub(r'[^a-z0-9]', '', artist.lower())
+        t = _re.sub(r'[^a-z0-9]', '', title.lower())
+        url = f'https://www.azlyrics.com/lyrics/{a}/{t}.html'
+        page = _get(url, headers={'Accept': 'text/html'}, timeout=9)
+        m = _re.search(
+            r'<!-- Usage of azlyrics.*?-->\s*(.*?)\s*</div>',
+            page, _re.DOTALL)
+        if m:
+            raw = _re.sub(r'<[^>]+>', '', m.group(1))
+            txt = _html.unescape(raw).strip()
+            if txt and len(txt) > 30: return None, txt
+    except Exception: pass
+    return None, None
+
+def _src_songlyrics(artist, title):
+    try:
+        a = _re.sub(r'[^a-z0-9-]', '-', artist.lower()).strip('-')
+        t = _re.sub(r'[^a-z0-9-]', '-', title.lower()).strip('-')
+        url = f'https://www.songlyrics.com/{a}/{t}-lyrics/'
+        page = _get(url, headers={'Accept': 'text/html'})
+        m = _re.search(r'<p id="songLyricsDiv"[^>]*>(.*?)</p>', page, _re.DOTALL)
+        if m:
+            raw = _re.sub(r'<[^>]+>', '', m.group(1))
+            txt = _html.unescape(raw).strip()
+            if txt and 'not found' not in txt.lower() and len(txt) > 30:
+                return None, txt
+    except Exception: pass
+    return None, None
+
+def _src_letras(artist, title):
+    try:
+        a = _re.sub(r'[^a-z0-9-]', '-', artist.lower()).strip('-')
+        t = _re.sub(r'[^a-z0-9-]', '-', title.lower()).strip('-')
+        url = f'https://www.letras.mus.br/{a}/{t}/'
+        page = _get(url, headers={'Accept': 'text/html'})
+        m = _re.search(r'<div class="lyric-original">(.*?)</div>', page, _re.DOTALL)
+        if m:
+            raw = _re.sub(r'<br\s*/?>', '\n', m.group(1))
+            raw = _re.sub(r'<[^>]+>', '', raw)
+            txt = _html.unescape(raw).strip()
+            if txt and len(txt) > 30: return None, txt
+    except Exception: pass
+    return None, None
+
+
+# ── Fetcher — sequential sources with status callbacks ────────────────────────
+class ClickableLyricLine(QLabel):
+    clicked = pyqtSignal(int)  # emits timestamp ms
+
+    def __init__(self, text: str, ms: int, parent=None):
+        super().__init__(text, parent)
+        self._ms = ms
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self._ms)
+        super().mousePressEvent(e)
+
+
+class LyricsFetcher(QObject):
+    finished = pyqtSignal(object, object)   # synced|None, plain|None
+    status   = pyqtSignal(str)              # progress message
+
+    def __init__(self, track, fetch_online: bool = True):
+        super().__init__()
+        self._t = track
+        self._fetch_online = fetch_online
+        self.was_online = False   # set True if result came from network
+
+    def run(self):
+        import concurrent.futures as _cf
+        t = self._t
+        artist = (t.artist or '').strip()
+        title  = (t.title  or '').strip()
+        album  = (t.album  or '').strip()
+
+        # 1. Embedded tags — instant, no network needed
+        self.status.emit('Checking embedded tags…')
+        synced, plain = _extract_embedded_lyrics(t.filepath)
+        if synced or plain:
+            self.finished.emit(synced, plain); return
+
+        if not self._fetch_online:
+            self.status.emit('')
+            self.finished.emit(None, None); return
+
+        # 2. All online sources fired in parallel.
+        #    Synced result takes priority; among each tier first-to-respond wins.
+        sources = [
+            ('LrcLib (exact)',   lambda: _src_lrclib_exact(artist, title, album, t.duration)),
+            ('LrcLib (search)',  lambda: _src_lrclib_search(artist, title)),
+            ('Lyrics.ovh',       lambda: _src_lyrics_ovh(artist, title)),
+            ('Musixmatch',       lambda: _src_musixmatch(artist, title)),
+            ('Genius',           lambda: _src_genius_search(artist, title)),
+            ('AZLyrics',         lambda: _src_azlyrics(artist, title)),
+            ('SongLyrics',       lambda: _src_songlyrics(artist, title)),
+            ('ChartLyrics',      lambda: _src_chartlyrics(artist, title)),
+            ('Letras.mus.br',    lambda: _src_letras(artist, title)),
+        ]
+
+        self.status.emit('Searching lyrics…')
+
+        result_lock = threading.Lock()
+        best_synced = [None]
+        best_plain  = [None]
+        synced_event = threading.Event()   # set as soon as any synced result arrives
+
+        def _run_source(fn):
+            if synced_event.is_set():
+                return   # synced already found, skip remaining
+            try:
+                s, p = fn()
+            except Exception:
+                return
+            with result_lock:
+                if s and best_synced[0] is None:
+                    best_synced[0] = s
+                    synced_event.set()
+                elif p and best_plain[0] is None:
+                    best_plain[0] = p
+
+        with _cf.ThreadPoolExecutor(max_workers=len(sources)) as pool:
+            futs = [pool.submit(_run_source, fn) for _, fn in sources]
+            _cf.wait(futs)
+
+        if best_synced[0] or best_plain[0]:
+            self.was_online = True
+            self.finished.emit(best_synced[0], best_plain[0])
+            return
+
+        self.status.emit('')
+        self.finished.emit(None, None)
+
+
+# ── Panel ─────────────────────────────────────────────────────────────────────
+class LyricsPanel(QWidget):
+    status_msg = pyqtSignal(str)   # forwarded to status bar
+    seek_requested = pyqtSignal(int)  # seek to ms
+
+    _LINE_H  = 38
+    _LINE_SP = 4
+
+    def __init__(self, player, ctrlbar=None, parent=None):
+        super().__init__(parent)
+        self._player   = player
+        self._ctrlbar  = ctrlbar  # for lyrics_fetch_enabled flag
+        self._synced   = []
+        self._plain    = ''
+        self._cur_idx  = -1
+        self._track    = None
+        self._thread: QThread  = None
+        self._fetcher: LyricsFetcher = None   # keep ref to prevent GC
+        self._pending_track = None
+        self._fetch_id: int = 0   # incremented on each new fetch; guards stale callbacks
+
+        self.setObjectName('lyrics_panel')
+        self.setFixedWidth(290)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        hdr = QWidget(); hdr.setFixedHeight(28)
+        hdr.setStyleSheet(f'background:{BG2}; border-bottom:1px solid {BORD};')
+        hl = QHBoxLayout(hdr); hl.setContentsMargins(12, 0, 8, 0)
+        self._hdr_lbl = QLabel('Lyrics')
+        self._hdr_lbl.setStyleSheet(f'color:{FG2};font-size:11px;background:transparent;')
+        self._src_lbl = QLabel('')
+        self._src_lbl.setStyleSheet(f'color:{FG2};font-size:10px;background:transparent;')
+        hl.addWidget(self._hdr_lbl, 1); hl.addWidget(self._src_lbl)
+        root.addWidget(hdr)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setStyleSheet(
+            'QScrollArea{border:none;background:transparent;}'
+            'QScrollBar:vertical{background:#0d0d0d;width:3px;border-radius:1px;}'
+            'QScrollBar::handle:vertical{background:#2a2a2a;border-radius:1px;min-height:20px;}'
+            'QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}')
+
+        self._cont = QWidget()
+        self._cont.setStyleSheet('background:transparent;')
+        self._cl = QVBoxLayout(self._cont)
+        self._cl.setContentsMargins(14, 18, 14, 18)
+        self._cl.setSpacing(self._LINE_SP)
+        self._scroll.setWidget(self._cont)
+        root.addWidget(self._scroll, 1)
+
+        self._lbls: list = []
+
+        self._sync_timer = QTimer(self)
+        self._sync_timer.setInterval(80)
+        self._sync_timer.timeout.connect(self._tick)
+
+    # ── public ──────────────────────────────────────────────────────────────
+
+    def set_track(self, track, deferred=False):
+        # Increment fetch_id before aborting so any in-flight _done callback is discarded
+        self._fetch_id += 1
+        self._track = track
+        self._synced = []; self._plain = ''; self._cur_idx = -1
+        self._sync_timer.stop()
+        self._abort()
+        if track:
+            self._hdr_lbl.setText(track.title or '')
+            fetch_ok = (self._ctrlbar is None or self._ctrlbar.lyrics_fetch_enabled)
+            if deferred:
+                self._pending_track = track
+                self._show_status('Waiting for focus…')
+            else:
+                self._pending_track = None
+                self._show_status('Searching…')
+                self._start(track, fetch_ok)
+        else:
+            self._pending_track = None
+            self._hdr_lbl.setText('Lyrics')
+            self._show_status('')
+
+    def on_focus_gained(self):
+        """Call when app regains focus — starts deferred fetch if pending."""
+        if self._pending_track and self._fetcher is None:
+            track = self._pending_track
+            self._pending_track = None
+            self._show_status('Searching…')
+            fetch_ok = (self._ctrlbar is None or self._ctrlbar.lyrics_fetch_enabled)
+            self._start(track, fetch_ok)
+
+    def on_position(self, ms: int):
+        if self._synced:
+            self._highlight(ms)
+
+    def set_accent(self, _acc: str):
+        if 0 <= self._cur_idx < len(self._lbls):
+            self._style_lbl(self._lbls[self._cur_idx], True)
+
+    # ── internal ────────────────────────────────────────────────────────────
+
+    def _abort(self):
+        if self._thread is not None:
+            try:
+                if self._thread.isRunning():
+                    self._thread.quit()
+                    self._thread.wait(300)
+            except RuntimeError:
+                pass  # C++ object already deleted
+        self._thread  = None
+        self._fetcher = None
+
+    def _start(self, track, fetch_online: bool = True):
+        # Increment generation counter so any in-flight callbacks become stale
+        self._fetch_id += 1
+        my_id = self._fetch_id
+        thread  = QThread(self)
+        fetcher = LyricsFetcher(track, fetch_online=fetch_online)
+        fetcher.moveToThread(thread)
+        thread.started.connect(fetcher.run)
+        # Wrap _done with the current fetch_id so stale callbacks are ignored
+        fetcher.finished.connect(lambda s, p, fid=my_id: self._done(s, p, fid))
+        fetcher.finished.connect(thread.quit)
+        fetcher.status.connect(self.status_msg)   # forward to status bar
+        thread.finished.connect(thread.deleteLater)
+        self._thread  = thread
+        self._fetcher = fetcher   # prevent GC!
+        thread.start()
+
+    def _done(self, synced, plain, fetch_id: int = -1):
+        # Ignore callbacks from previous fetch cycles (stale results)
+        if fetch_id != self._fetch_id:
+            return
+        fetcher = self._fetcher; self._fetcher = None
+        if self._track is None: return
+        if synced:
+            self._synced = synced
+            self._src_lbl.setText('synced')
+            self._build_synced()
+            self._sync_timer.start()
+            self._tick()
+        elif plain:
+            self._plain = plain
+            self._src_lbl.setText('')
+            self._build_plain()
+        else:
+            fetch_off = self._ctrlbar and not self._ctrlbar.lyrics_fetch_enabled
+            msg = 'File does not contain lyrics.' if fetch_off else 'Lyrics not found.'
+            self._show_status(msg)
+            self._src_lbl.setText('')
+            return
+        # Embed into file if fetched from network (fetcher flag) and not already embedded
+        if fetcher and fetcher.was_online and self._track:
+            fp = self._track.filepath
+            threading.Thread(
+                target=embed_lyrics, args=(fp, synced, plain or ''),
+                daemon=True).start()
+
+    def _clear(self):
+        while self._cl.count():
+            it = self._cl.takeAt(0)
+            if it.widget(): it.widget().deleteLater()
+        self._lbls = []
+
+    def _show_status(self, msg):
+        self._sync_timer.stop(); self._clear()
+        if not msg: return
+        lbl = QLabel(msg)
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl.setWordWrap(True)
+        lbl.setStyleSheet(f'color:{FG2};font-size:13px;background:transparent;')
+        self._cl.addStretch(); self._cl.addWidget(lbl); self._cl.addStretch()
+
+    def _style_lbl(self, lbl, active: bool):
+        if active:
+            lbl.setStyleSheet(
+                f'color:{ACC};font-size:16px;font-weight:600;'
+                f'padding:0 2px;background:transparent;')
+        else:
+            lbl.setStyleSheet(
+                f'color:{FG2};font-size:14px;padding:0 2px;background:transparent;')
+
+    def _build_synced(self):
+        self._clear()
+        for ms, txt in self._synced:
+            lbl = ClickableLyricLine(txt if txt else '·', ms)
+            lbl.setWordWrap(True)
+            lbl.setFixedHeight(self._LINE_H)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            self._style_lbl(lbl, False)
+            lbl.clicked.connect(self.seek_requested)
+            self._lbls.append(lbl)
+            self._cl.addWidget(lbl)
+        self._cl.addStretch()
+
+    def _build_plain(self):
+        self._clear()
+        lbl = QLabel(self._plain)
+        lbl.setWordWrap(True)
+        lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        lbl.setStyleSheet(
+            f'color:{FG2};font-size:14px;line-height:1.7;background:transparent;')
+        lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._cl.addWidget(lbl); self._cl.addStretch()
+
+    def _highlight(self, ms: int):
+        if not self._synced or not self._lbls: return
+        idx = 0
+        for i, (t, _) in enumerate(self._synced):
+            if t <= ms: idx = i
+            else:       break
+        if idx == self._cur_idx: return
+        if 0 <= self._cur_idx < len(self._lbls):
+            self._style_lbl(self._lbls[self._cur_idx], False)
+        self._cur_idx = idx
+        self._style_lbl(self._lbls[idx], True)
+        # Inertia scroll via QPropertyAnimation
+        step   = self._LINE_H + self._LINE_SP
+        target = idx * step - self._scroll.height() // 2 + self._LINE_H // 2
+        target = max(0, target)
+        bar = self._scroll.verticalScrollBar()
+        anim = QPropertyAnimation(bar, b'value', self)
+        anim.setDuration(420)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        anim.setStartValue(bar.value())
+        anim.setEndValue(target)
+        anim.start(QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
+
+    def _tick(self):
+        if not self._synced: return
+        try:
+            ok, p = self._player._pipe.query_position(Gst.Format.TIME)
+            if ok: self._highlight(p // Gst.MSECOND)
+        except Exception:
+            pass
+
+
 class TouchComboBox(QComboBox):
     """QComboBox that won't close its popup immediately after opening on touch."""
     def __init__(self, parent=None):
@@ -666,44 +1695,6 @@ class TouchComboBox(QComboBox):
         if QDateTime.currentMSecsSinceEpoch() - self._popup_opened_ms < 400:
             return
         super().hidePopup()
-
-
-class _TableTouchScroll(QObject):
-    """Touch filter: drag scrolls the table; short tap selects the row."""
-    DRAG_THRESH = 12
-    def __init__(self, table, parent=None):
-        super().__init__(parent)
-        self._table = table; self._start = None
-        self._dragging = False; self._last_y = 0.0
-    def eventFilter(self, obj, e):
-        t = e.type()
-        if t == QEvent.Type.TouchBegin:
-            pts = e.points()
-            if not pts: return False
-            self._start = pts[0].position()
-            self._last_y = self._start.y(); self._dragging = False
-            e.accept(); return True
-        if t == QEvent.Type.TouchUpdate:
-            pts = e.points()
-            if not pts or self._start is None: return False
-            dy = pts[0].position().y() - self._start.y()
-            if not self._dragging and abs(dy) > self.DRAG_THRESH:
-                self._dragging = True
-            if self._dragging:
-                delta = pts[0].position().y() - self._last_y
-                sb = self._table.verticalScrollBar()
-                sb.setValue(sb.value() - int(delta))
-                self._last_y = pts[0].position().y()
-            e.accept(); return True
-        if t == QEvent.Type.TouchEnd:
-            pts = e.points()
-            if not self._dragging and pts and self._start is not None:
-                pos = pts[0].position().toPoint()
-                idx = self._table.indexAt(pos)
-                if idx.isValid(): self._table.setCurrentIndex(idx)
-            self._start = None; self._dragging = False
-            e.accept(); return True
-        return False
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -771,11 +1762,17 @@ class EqPopup(QFrame):
             ' background:#222222; border-radius:0 6px 6px 0; }'
             'QComboBox::down-arrow { width:16px; height:16px; }'
             'QComboBox QAbstractItemView { background:#1e1e1e; color:#f0f0f0;'
-            ' selection-background-color:#282828; border:1px solid #444; }')
+            ' selection-background-color:#282828; border:1px solid #444; }'
+            'QComboBox QAbstractItemView::item { min-height:35px; padding:0 8px; }')
         if self._profile_combo.lineEdit():
             le = self._profile_combo.lineEdit()
             le.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
             le.setPlaceholderText('Profile name…')
+        # Force item height via the popup list viewf
+        combo_view = self._profile_combo.view()
+        if combo_view:
+            combo_view.setUniformItemSizes(True)
+            combo_view.setSpacing(0)
         self._profile_combo.addItem(self._NEW)  # always first
         # ONLY load/react when user explicitly selects from dropdown
         self._profile_combo.activated.connect(self._on_profile_activated)
@@ -820,17 +1817,22 @@ class EqPopup(QFrame):
         self._band_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._band_table.setMinimumHeight(240)
         self._band_table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
-        # Touch-scroll: drag → scroll, tap → select
-        self._band_table.viewport().setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents)
-        self._tscroll = _TableTouchScroll(self._band_table)
-        self._band_table.viewport().installEventFilter(self._tscroll)
+        QScroller.grabGesture(self._band_table.viewport(), QScroller.ScrollerGestureType.LeftMouseButtonGesture)
+        _eq_sp = QScrollerProperties()
+        _eq_sp.setScrollMetric(QScrollerProperties.ScrollMetric.DecelerationFactor,         0.35)
+        _eq_sp.setScrollMetric(QScrollerProperties.ScrollMetric.MaximumVelocity,            0.8)
+        _eq_sp.setScrollMetric(QScrollerProperties.ScrollMetric.VerticalOvershootPolicy,
+                               QScrollerProperties.OvershootPolicy.OvershootAlwaysOff)
+        _eq_sp.setScrollMetric(QScrollerProperties.ScrollMetric.HorizontalOvershootPolicy,
+                               QScrollerProperties.OvershootPolicy.OvershootAlwaysOff)
+        QScroller.scroller(self._band_table.viewport()).setScrollerProperties(_eq_sp)
         main.addWidget(self._band_table)
 
         # Add/Remove buttons
         btn_row = QHBoxLayout()
-        self._btn_add = QPushButton('➕ Add Band')
+        self._btn_add = QPushButton('+ Add Band')
         self._btn_add.clicked.connect(self._add_band)
-        self._btn_remove = QPushButton('✕ Remove')
+        self._btn_remove = QPushButton('- Remove')
         self._btn_remove.clicked.connect(self._remove_selected_band)
         btn_row.addWidget(self._btn_add)
         btn_row.addWidget(self._btn_remove)
@@ -855,9 +1857,22 @@ class EqPopup(QFrame):
         self._graph.set_enabled(on)
         self._apply_timer.start()  # apply after toggle
 
+    def _on_freq_scale_changed(self, log: bool):
+        self._freq_log = log
+        self._graph.set_freq_log(log)
+        for row in range(self._band_table.rowCount()):
+            cell = self._band_table.cellWidget(row, 0)
+            if cell and hasattr(cell, 'set_freq_log'):
+                cell.set_freq_log(log)
+
     def _add_band(self):
         if len(self._bands) >= MAX_EQ_BANDS:
-            QMessageBox.warning(self, 'Warning', f'Maximum {MAX_EQ_BANDS} bands can be added.')
+            self._btn_add.setText(f'Max {MAX_EQ_BANDS} bands')
+            self._btn_add.setEnabled(False)
+            def _restore():
+                self._btn_add.setText('+ Add Band')
+                self._btn_add.setEnabled(True)
+            QTimer.singleShot(2000, _restore)
             return
         # Default values: 1000 Hz, 0 dB, Q=1.0
         self._bands.append((1000.0, 0.0, 1.0))
@@ -992,6 +2007,13 @@ class EqPopup(QFrame):
         if name:
             self._current_profile = name
             if self._loaded_lbl: self._loaded_lbl.setText(f'Loaded: {name}')
+            idx = self._profile_combo.findText(name)
+            if idx >= 0:
+                self._profile_combo.blockSignals(True)
+                self._profile_combo.setCurrentIndex(idx)
+                self._profile_combo.blockSignals(False)
+            elif self._profile_combo.lineEdit():
+                self._profile_combo.lineEdit().setText(name)
         self.eq_changed.emit(self._bands, self._enabled)
 
     def set_profiles(self, profiles):
@@ -1000,6 +2022,12 @@ class EqPopup(QFrame):
         self._profile_combo.addItem(self._NEW)  # always first
         for name in sorted(profiles.keys()):
             self._profile_combo.addItem(name)
+        if self._current_profile:
+            idx = self._profile_combo.findText(self._current_profile)
+            if idx >= 0:
+                self._profile_combo.blockSignals(True)
+                self._profile_combo.setCurrentIndex(idx)
+                self._profile_combo.blockSignals(False)
 
     def get_profiles(self):
         return self._profiles
@@ -1358,22 +2386,31 @@ class TabCloseButton(QAbstractButton):
         super().__init__(parent)
         self.setFixedSize(16, 16)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
 
     def sizeHint(self): return QSize(16, 16)
+    def enterEvent(self, e): self.update(); super().enterEvent(e)
+    def leaveEvent(self, e): self.update(); super().leaveEvent(e)
 
     def paintEvent(self, _):
-        p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        if self.underMouse():
-            p.setBrush(QBrush(QColor(ACC))); p.setPen(Qt.PenStyle.NoPen)
-            p.drawEllipse(QRectF(0, 0, 16, 16))
-            pen = QPen(QColor('#ffffff'), 1.8)
-        else:
-            pen = QPen(QColor(FG2), 1.6)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # Blit parent pixels so our background matches the tab exactly
+        if self.parent():
+            pos = self.mapToParent(QPoint(0, 0))
+            self.parent().render(p, QPoint(0, 0),
+                                 QRegion(pos.x(), pos.y(), self.width(), self.height()))
+        # X in accent color (dark shade, brighter on hover)
+        acc = QColor(ACC)
+        h, s, v, _ = acc.getHsvF()
+        xcolor = QColor()
+        xcolor.setHsvF(h, min(1.0, s), 0.85 if self.underMouse() else 0.55)
+        pen = QPen(xcolor, 2.0)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        p.setPen(pen); p.setBrush(Qt.BrushStyle.NoBrush)
-        m = 4.5
-        p.drawLine(QPointF(m, m), QPointF(16-m, 16-m))
-        p.drawLine(QPointF(16-m, m), QPointF(m, 16-m))
+        p.setPen(pen)
+        m = 3.5
+        p.drawLine(QPointF(m, m), QPointF(16 - m, 16 - m))
+        p.drawLine(QPointF(16 - m, m), QPointF(m, 16 - m))
         p.end()
 
 
@@ -1530,7 +2567,9 @@ def draw_default_cover(size: int, radius: int) -> QPixmap:
     return pm
 
 
-_COVER_DISK_DIR = CONFIG_PATH.parent / 'covers'
+_COVER_DISK_DIR  = CONFIG_PATH.parent / 'covers'
+_cover_fetch_on  = True   # module-level flag — updated by ControlBar
+_cover_locked_set: set = set()   # filepaths that must not auto-fetch
 _COVER_JPEG_QUALITY = 80
 
 
@@ -1573,11 +2612,37 @@ def get_cover_pixmap(fp: str, size: int = 48, radius: int = 4) -> Optional[QPixm
                 pass
             return pm
 
-    # No embedded cover – use default clef image
+    # No embedded cover — async fetch is triggered separately; return None so the caller
+    # knows to show a placeholder and update the widget once the worker finishes.
+    if _cover_fetch_on and fp not in _cover_locked_set:
+        # Return None here; CoverFetchWorker will fill the cache and notify the UI.
+        return None
+    # Cover fetch disabled or path locked — show default clef icon
     default = draw_default_cover(size, radius)
     _cover_cache[key] = default
     return default
 
+
+
+class CoverFetchWorker(QObject):
+    """Background worker: fetch raw cover bytes for one track, emit to UI thread.
+    QPixmap creation must happen on the main thread, so we only emit raw bytes here."""
+    # Emit filepath, size, radius, raw image bytes
+    cover_ready = pyqtSignal(str, int, int, bytes)
+
+    def __init__(self, fp, artist, title, album, size, radius):
+        super().__init__()
+        self._fp = fp; self._artist = artist; self._title = title
+        self._album = album; self._size = size; self._radius = radius
+
+    def run(self):
+        if not _cover_fetch_on or self._fp in _cover_locked_set:
+            return
+        data = fetch_cover_online(self._artist, self._title, self._album)
+        if not data:
+            return
+        # Emit raw bytes — receiver builds QPixmap on the main (UI) thread
+        self.cover_ready.emit(self._fp, self._size, self._radius, data)
 
 def _clear_cover_disk_cache():
     """Wipe disk cover cache (call on rescan/new source added)."""
@@ -1589,6 +2654,458 @@ def _clear_cover_disk_cache():
                 f.unlink(missing_ok=True)
     except Exception:
         pass
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Library Cover Fetch Popup
+# ══════════════════════════════════════════════════════════════════════════════
+class LibraryCoverFetchWorker(QObject):
+    """Fetches covers for an entire track list sequentially in a worker thread.
+    Emits raw bytes per track so the UI thread builds QPixmap objects."""
+    progress    = pyqtSignal(int, int, str)   # current_index, total, track_name
+    track_done  = pyqtSignal(str, bytes, bool) # filepath, raw_bytes, found_flag
+    finished    = pyqtSignal(int, int)        # found_count, total_count
+
+    def __init__(self, tracks: list):
+        super().__init__()
+        self._tracks   = list(tracks)
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        # Only count tracks that actually need a fetch for the progress bar
+        needs_fetch = [t for t in self._tracks
+                       if extract_cover_bytes(t.filepath) is None
+                       and t.filepath not in _cover_locked_set]
+        total = len(needs_fetch)
+        found = 0
+        done  = 0
+        for t in needs_fetch:
+            if self._cancelled:
+                break
+            name = t.title or Path(t.filepath).stem
+            done += 1
+            self.progress.emit(done, total, name)
+            data = fetch_cover_online(t.artist or '', t.title or '', t.album or '')
+            if data:
+                found += 1
+                self.track_done.emit(t.filepath, data, True)
+            else:
+                self.track_done.emit(t.filepath, b'', False)
+        self.finished.emit(found, total)
+
+
+class CoverFetchPopup(QDialog):
+    """Modal dialog that fetches covers for tracks missing a cover,
+    with progress bar based only on tracks that need fetching and a scrollable log."""
+
+    def __init__(self, tracks: list, table_pages: list, ctrlbar, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Fetch Covers')
+        self.setModal(True)
+        self.setMinimumWidth(520)
+        self._tracks  = list(tracks)
+        self._pages   = table_pages
+        self._ctrlbar = ctrlbar
+        self._thread  = None
+        self._worker  = None
+        self._found   = 0
+        self._running = False
+        self._needs   = [t for t in self._tracks
+                         if extract_cover_bytes(t.filepath) is None
+                         and t.filepath not in _cover_locked_set]
+
+        root = QVBoxLayout(self)
+        root.setSpacing(10)
+        root.setContentsMargins(20, 18, 20, 18)
+
+        title_lbl = QLabel('Fetch Covers for Library')
+        title_lbl.setStyleSheet(f'font-size:14px;font-weight:bold;color:{FG};')
+        root.addWidget(title_lbl)
+
+        info_lbl = QLabel(
+            f'<b>{len(self._needs)}</b> tracks need a cover '
+            f'(out of {len(self._tracks)} total — tracks with embedded covers skipped).')
+        info_lbl.setWordWrap(True)
+        info_lbl.setStyleSheet(f'color:{FG2};font-size:12px;')
+        root.addWidget(info_lbl)
+
+        self._track_lbl = QLabel('')
+        self._track_lbl.setStyleSheet(f'color:{FG};font-size:12px;')
+        self._track_lbl.setWordWrap(True)
+        root.addWidget(self._track_lbl)
+
+        self._progress = QProgressBar()
+        self._progress.setRange(0, max(1, len(self._needs)))
+        self._progress.setValue(0)
+        self._progress.setTextVisible(True)
+        self._progress.setFixedHeight(22)
+        self._progress.setStyleSheet(
+            f'QProgressBar{{background:{BG3};border:1px solid {B2};border-radius:4px;'
+            f'color:{FG};font-size:11px;text-align:center;}}'
+            f'QProgressBar::chunk{{background:{ACC};border-radius:3px;}}')
+        root.addWidget(self._progress)
+
+        self._log = QListWidget()
+        self._log.setFixedHeight(140)
+        self._log.setStyleSheet(
+            'QListWidget{background:#000000;border:1px solid ' + B2 + ';border-radius:4px;'
+            'color:' + FG2 + ';font-size:10px;outline:none;}'
+            'QListWidget::item{padding:1px 6px;border:none;}'
+            'QListWidget::item:selected{background:transparent;color:' + FG2 + ';}')
+        # Enable touch/kinetic scrolling — critical for touch screens
+        self._log.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        QScroller.grabGesture(self._log.viewport(), QScroller.ScrollerGestureType.LeftMouseButtonGesture)
+        _sp = QScrollerProperties()
+        _sp.setScrollMetric(QScrollerProperties.ScrollMetric.DecelerationFactor,         0.35)
+        _sp.setScrollMetric(QScrollerProperties.ScrollMetric.MaximumVelocity,            0.8)
+        _sp.setScrollMetric(QScrollerProperties.ScrollMetric.VerticalOvershootPolicy,
+                            QScrollerProperties.OvershootPolicy.OvershootAlwaysOff)
+        _sp.setScrollMetric(QScrollerProperties.ScrollMetric.HorizontalOvershootPolicy,
+                            QScrollerProperties.OvershootPolicy.OvershootAlwaysOff)
+        QScroller.scroller(self._log.viewport()).setScrollerProperties(_sp)
+        root.addWidget(self._log)
+
+        self._result_lbl = QLabel('')
+        self._result_lbl.setStyleSheet(f'color:{FG2};font-size:11px;')
+        root.addWidget(self._result_lbl)
+
+        btn_row = QHBoxLayout()
+        self._btn_start  = QPushButton('Start')
+        self._btn_cancel = QPushButton('Cancel')
+        self._btn_cancel.setEnabled(False)
+        self._btn_close  = QPushButton('Close')
+        btn_row.addWidget(self._btn_start)
+        btn_row.addWidget(self._btn_cancel)
+        btn_row.addStretch()
+        btn_row.addWidget(self._btn_close)
+        root.addLayout(btn_row)
+
+        self._btn_start.clicked.connect(self._start)
+        self._btn_cancel.clicked.connect(self._cancel)
+        self._btn_close.clicked.connect(self._on_close)
+
+    def _log_add(self, text: str, ok: bool):
+        item = QListWidgetItem(text)
+        item.setForeground(QColor('#55bb55') if ok else QColor('#bb3333'))
+        self._log.addItem(item)
+        self._log.scrollToBottom()
+
+    def set_tracks(self, tracks: list):
+        self._tracks = list(tracks)
+        self._needs  = [t for t in self._tracks
+                        if extract_cover_bytes(t.filepath) is None
+                        and t.filepath not in _cover_locked_set]
+        self._progress.setRange(0, max(1, len(self._needs)))
+
+    def _start(self):
+        if self._running: return
+        self._running = True
+        self._found   = 0
+        self._log.clear()
+        self._progress.setValue(0)
+        self._result_lbl.setText('')
+        self._btn_start.setEnabled(False)
+        self._btn_cancel.setEnabled(True)
+
+        worker = LibraryCoverFetchWorker(self._tracks)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._on_progress)
+        worker.track_done.connect(self._on_track_done)
+        worker.finished.connect(self._on_finished)
+        worker.finished.connect(thread.quit)          # let thread finish normally
+        # DO NOT connect thread.finished to deleteLater – thread is child of dialog
+        self._thread = thread
+        self._worker = worker
+        thread.start()
+
+    def _cancel(self):
+        if self._worker: self._worker.cancel()
+        self._btn_cancel.setEnabled(False)
+        self._track_lbl.setText('Cancelling…')
+
+    def _on_close(self):
+        self._cancel()
+        if self._thread and self._thread.isRunning():
+            self._thread.quit()
+            self._thread.wait(3000)
+        self._thread = None   # avoid accessing deleted object
+        self.accept()
+
+    def closeEvent(self, e):
+        self._cancel()
+        if self._thread and self._thread.isRunning():
+            self._thread.quit()
+            self._thread.wait(3000)
+        self._thread = None
+        super().closeEvent(e)
+
+    def _on_progress(self, current: int, total: int, name: str):
+        self._progress.setValue(current)
+        self._track_lbl.setText(f'[{current}/{total}]  {name}')
+
+    def _on_track_done(self, fp: str, data: bytes, found: bool):
+        name = Path(fp).stem
+        if not found:
+            self._log_add(f'FAIL  {name}', False)
+            return
+        self._log_add(f'OK    {name}', True)
+        for size, radius in [(28, 4), (64, 8)]:
+            key = (fp, size, radius)
+            raw = QPixmap()
+            if raw.loadFromData(data):
+                pm = _rounded_pixmap(raw, size, radius)
+                _cover_cache[key] = pm
+                try:
+                    dkey = _cover_disk_key(fp, size, radius)
+                    disk_path = _COVER_DISK_DIR / f'{dkey}.jpg'
+                    _COVER_DISK_DIR.mkdir(parents=True, exist_ok=True)
+                    pm.save(str(disk_path), 'JPEG', _COVER_JPEG_QUALITY)
+                except Exception:
+                    pass
+        threading.Thread(target=embed_cover_bytes, args=(fp, data), daemon=True).start()
+        for page in self._pages:
+            tracks = page.tracks if hasattr(page, 'tracks') else []
+            for r, t in enumerate(tracks):
+                if t.filepath == fp and r < page.table.rowCount():
+                    item = page.table.item(r, C_TIT)
+                    pm28 = _cover_cache.get((fp, 28, 4))
+                    if item and pm28:
+                        item.setIcon(QIcon(pm28))
+                    break
+        if self._ctrlbar and self._ctrlbar._cur_track:
+            if self._ctrlbar._cur_track.filepath == fp:
+                pm64 = _cover_cache.get((fp, 64, 8))
+                if pm64 and self._ctrlbar._cover_lbl.isVisible():
+                    self._ctrlbar._cover_lbl.setPixmap(pm64)
+        self._found += 1
+
+    def _on_finished(self, found: int, total: int):
+        self._running = False
+        self._btn_start.setEnabled(True)
+        self._btn_cancel.setEnabled(False)
+        self._track_lbl.setText('Done.')
+        self._result_lbl.setText(f'Found covers for {found} out of {total} tracks.')
+        self._progress.setValue(total)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Library Tag Fetch Worker + Popup
+# ══════════════════════════════════════════════════════════════════════════════
+
+class LibraryTagFetchWorker(QObject):
+    """Fetches missing tags (title/artist/album) for library tracks sequentially.
+    Progress is based only on tracks that are missing at least one tag."""
+    progress   = pyqtSignal(int, int, str)        # current, total, track_name
+    track_done = pyqtSignal(str, dict, bool)       # filepath, tags_dict, found_flag
+    finished   = pyqtSignal(int, int)              # updated_count, total_needs
+
+    def __init__(self, tracks: list):
+        super().__init__()
+        self._tracks    = list(tracks)
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        needs = [t for t in self._tracks
+                 if not (t.title.strip() and t.artist.strip() and t.album.strip())]
+        total   = len(needs)
+        updated = 0
+        for i, t in enumerate(needs):
+            if self._cancelled:
+                break
+            name = t.title or Path(t.filepath).stem
+            self.progress.emit(i + 1, total, name)
+            tags = lookup_tags_online(t.artist or '', t.title or Path(t.filepath).stem)
+            if tags:
+                result = {}
+                if not t.title.strip()  and tags.get('title'):  result['title']  = tags['title']
+                if not t.artist.strip() and tags.get('artist'): result['artist'] = tags['artist']
+                if not t.album.strip()  and tags.get('album'):  result['album']  = tags['album']
+                if result:
+                    updated += 1
+                    self.track_done.emit(t.filepath, result, True)
+                else:
+                    self.track_done.emit(t.filepath, {}, False)
+            else:
+                self.track_done.emit(t.filepath, {}, False)
+        self.finished.emit(updated, total)
+
+
+class TagFetchPopup(QDialog):
+    """Modal dialog that looks up missing tags for library tracks.
+    Progress bar counts only tracks with at least one missing tag."""
+
+    tags_updated = pyqtSignal(str, dict)
+
+    def __init__(self, tracks: list, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Fetch Missing Tags')
+        self.setModal(True)
+        self.setMinimumWidth(520)
+        self._tracks  = list(tracks)
+        self._thread  = None
+        self._worker  = None
+        self._updated = 0
+        self._running = False
+        self._needs   = [t for t in self._tracks
+                         if not (t.title.strip() and t.artist.strip() and t.album.strip())]
+
+        root = QVBoxLayout(self)
+        root.setSpacing(10)
+        root.setContentsMargins(20, 18, 20, 18)
+
+        title_lbl = QLabel('Fetch Missing Tags for Library')
+        title_lbl.setStyleSheet(f'font-size:14px;font-weight:bold;color:{FG};')
+        root.addWidget(title_lbl)
+
+        info_lbl = QLabel(
+            f'<b>{len(self._needs)}</b> tracks have at least one missing tag '
+            f'(out of {len(self._tracks)} total — tracks with all tags are skipped).')
+        info_lbl.setWordWrap(True)
+        info_lbl.setStyleSheet(f'color:{FG2};font-size:12px;')
+        root.addWidget(info_lbl)
+
+        self._track_lbl = QLabel('')
+        self._track_lbl.setStyleSheet(f'color:{FG};font-size:12px;')
+        self._track_lbl.setWordWrap(True)
+        root.addWidget(self._track_lbl)
+
+        self._progress = QProgressBar()
+        self._progress.setRange(0, max(1, len(self._needs)))
+        self._progress.setValue(0)
+        self._progress.setTextVisible(True)
+        self._progress.setFixedHeight(22)
+        self._progress.setStyleSheet(
+            f'QProgressBar{{background:{BG3};border:1px solid {B2};border-radius:4px;'
+            f'color:{FG};font-size:11px;text-align:center;}}'
+            f'QProgressBar::chunk{{background:{ACC};border-radius:3px;}}')
+        root.addWidget(self._progress)
+
+        self._log = QListWidget()
+        self._log.setFixedHeight(140)
+        self._log.setStyleSheet(
+            'QListWidget{background:#000000;border:1px solid ' + B2 + ';border-radius:4px;'
+            'color:' + FG2 + ';font-size:10px;outline:none;}'
+            'QListWidget::item{padding:1px 6px;border:none;}'
+            'QListWidget::item:selected{background:transparent;color:' + FG2 + ';}')
+        self._log.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        QScroller.grabGesture(self._log.viewport(), QScroller.ScrollerGestureType.LeftMouseButtonGesture)
+        _sp = QScrollerProperties()
+        _sp.setScrollMetric(QScrollerProperties.ScrollMetric.DecelerationFactor,         0.35)
+        _sp.setScrollMetric(QScrollerProperties.ScrollMetric.MaximumVelocity,            0.8)
+        _sp.setScrollMetric(QScrollerProperties.ScrollMetric.VerticalOvershootPolicy,
+                            QScrollerProperties.OvershootPolicy.OvershootAlwaysOff)
+        _sp.setScrollMetric(QScrollerProperties.ScrollMetric.HorizontalOvershootPolicy,
+                            QScrollerProperties.OvershootPolicy.OvershootAlwaysOff)
+        QScroller.scroller(self._log.viewport()).setScrollerProperties(_sp)
+        root.addWidget(self._log)
+
+        self._result_lbl = QLabel('')
+        self._result_lbl.setStyleSheet(f'color:{FG2};font-size:11px;')
+        root.addWidget(self._result_lbl)
+
+        btn_row = QHBoxLayout()
+        self._btn_start  = QPushButton('Start')
+        self._btn_cancel = QPushButton('Cancel')
+        self._btn_cancel.setEnabled(False)
+        self._btn_close  = QPushButton('Close')
+        btn_row.addWidget(self._btn_start)
+        btn_row.addWidget(self._btn_cancel)
+        btn_row.addStretch()
+        btn_row.addWidget(self._btn_close)
+        root.addLayout(btn_row)
+
+        self._btn_start.clicked.connect(self._start)
+        self._btn_cancel.clicked.connect(self._cancel)
+        self._btn_close.clicked.connect(self._on_close)
+
+    def _log_add(self, text: str, ok: bool):
+        item = QListWidgetItem(text)
+        item.setForeground(QColor('#55bb55') if ok else QColor('#bb3333'))
+        self._log.addItem(item)
+        self._log.scrollToBottom()
+
+    def set_tracks(self, tracks: list):
+        self._tracks = list(tracks)
+        self._needs  = [t for t in self._tracks
+                        if not (t.title.strip() and t.artist.strip() and t.album.strip())]
+        self._progress.setRange(0, max(1, len(self._needs)))
+
+    def _start(self):
+        if self._running: return
+        self._running = True
+        self._updated = 0
+        self._log.clear()
+        self._progress.setValue(0)
+        self._result_lbl.setText('')
+        self._btn_start.setEnabled(False)
+        self._btn_cancel.setEnabled(True)
+
+        worker = LibraryTagFetchWorker(self._tracks)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._on_progress)
+        worker.track_done.connect(self._on_track_done)
+        worker.finished.connect(self._on_finished)
+        worker.finished.connect(thread.quit)          # let thread finish normally
+        # DO NOT connect thread.finished to deleteLater – thread is child of dialog
+        self._thread = thread
+        self._worker = worker
+        thread.start()
+
+    def _cancel(self):
+        if self._worker: self._worker.cancel()
+        self._btn_cancel.setEnabled(False)
+        self._track_lbl.setText('Cancelling…')
+
+    def _on_close(self):
+        self._cancel()
+        if self._thread and self._thread.isRunning():
+            self._thread.quit()
+            self._thread.wait(3000)
+        self._thread = None   # avoid accessing deleted object
+        self.accept()
+
+    def closeEvent(self, e):
+        self._cancel()
+        if self._thread and self._thread.isRunning():
+            self._thread.quit()
+            self._thread.wait(3000)
+        self._thread = None
+        super().closeEvent(e)
+
+    def _on_progress(self, current: int, total: int, name: str):
+        self._progress.setValue(current)
+        self._track_lbl.setText(f'[{current}/{total}]  {name}')
+
+    def _on_track_done(self, fp: str, tags: dict, found: bool):
+        name = Path(fp).stem
+        if not found or not tags:
+            self._log_add(f'FAIL  {name}', False)
+            return
+        filled = ', '.join(f'{k}={v}' for k, v in tags.items())
+        self._log_add(f'OK    {name}  [{filled}]', True)
+        def _write():
+            write_tags_to_file(fp, tags)
+        threading.Thread(target=_write, daemon=True).start()
+        self._updated += 1
+        self.tags_updated.emit(fp, tags)
+
+    def _on_finished(self, updated: int, total: int):
+        self._running = False
+        self._btn_start.setEnabled(True)
+        self._btn_cancel.setEnabled(False)
+        self._track_lbl.setText('Done.')
+        self._result_lbl.setText(f'Updated tags for {updated} out of {total} tracks.')
+        self._progress.setValue(total)
 
 
 def scan_folder(folder: str) -> List[Track]:
@@ -1776,10 +3293,23 @@ class Player(QObject):
     def stop(self): self._destroy()
 
     def seek(self, ms: int):
-        if self._pipe:
-            self._pipe.seek_simple(Gst.Format.TIME,
-                Gst.SeekFlags.FLUSH | Gst.SeekFlags.KEY_UNIT, ms*Gst.MSECOND)
-            if self._playing: self._pipe.set_state(Gst.State.PLAYING)
+        if not self._pipe:
+            return
+        # Only seek when the pipeline is in PAUSED or PLAYING state to avoid hangs/crashes
+        ok, state, _pending = self._pipe.get_state(0)
+        if state not in (Gst.State.PAUSED, Gst.State.PLAYING):
+            # Defer seek until pipeline reaches a seekable state
+            QTimer.singleShot(120, lambda: self.seek(ms))
+            return
+        try:
+            self._pipe.seek_simple(
+                Gst.Format.TIME,
+                Gst.SeekFlags.FLUSH | Gst.SeekFlags.KEY_UNIT,
+                max(0, ms) * Gst.MSECOND)
+            if self._playing:
+                self._pipe.set_state(Gst.State.PLAYING)
+        except Exception as ex:
+            print(f'[Player] seek error: {ex}')
 
     def set_volume(self, v: float):
         self._volume = max(0.0, min(1.0, v))
@@ -1837,6 +3367,7 @@ class Player(QObject):
         if not self._eq_filters:
             return
         GLib.idle_add(self._apply_eq_to_filters_glib)
+        self._apply_eq_to_filters_glib()  # also apply immediately
 
     def _apply_eq_to_filters_glib(self):
         if not self._eq_filters:
@@ -2380,9 +3911,10 @@ class TrackTable(QTableWidget):
         self.verticalHeader().setDefaultSectionSize(44)
         QScroller.grabGesture(self.viewport(), QScroller.ScrollerGestureType.TouchGesture)
         sp = QScrollerProperties()
-        sp.setScrollMetric(QScrollerProperties.ScrollMetric.DecelerationFactor,           0.25)
-        sp.setScrollMetric(QScrollerProperties.ScrollMetric.MaximumVelocity,              0.6)
+        sp.setScrollMetric(QScrollerProperties.ScrollMetric.DecelerationFactor,           0.35)
+        sp.setScrollMetric(QScrollerProperties.ScrollMetric.MaximumVelocity,              0.8)
         sp.setScrollMetric(QScrollerProperties.ScrollMetric.AcceleratingFlickMaximumTime, 0.15)
+        sp.setScrollMetric(QScrollerProperties.ScrollMetric.DragStartDistance,            0.005)
         sp.setScrollMetric(QScrollerProperties.ScrollMetric.VerticalOvershootPolicy,
                            QScrollerProperties.OvershootPolicy.OvershootAlwaysOff)
         sp.setScrollMetric(QScrollerProperties.ScrollMetric.HorizontalOvershootPolicy,
@@ -2403,7 +3935,9 @@ class TrackTable(QTableWidget):
     def populate(self, tracks, playing_idx=-1):
         self.setSortingEnabled(False)
         self.setRowCount(0); self.setRowCount(len(tracks))
-        for r, t in enumerate(tracks): self._fill_row(r, t)
+        self._tracks_ref = tracks  # keep ref so cover_ready can find the row
+        for r, t in enumerate(tracks):
+            self._fill_row(r, t)
         self.set_playing_row(playing_idx)
         # Never re-enable Qt's built-in sorting; we sort _tracks manually
 
@@ -2448,7 +3982,11 @@ class TrackTable(QTableWidget):
             item = QTableWidgetItem(txt)
             if col == C_TIT and self._covers_on:
                 pm = get_cover_pixmap(t.filepath, 28, 4)
-                if pm: item.setIcon(QIcon(pm))
+                # pm is None when cover fetch is enabled but no embedded cover yet;
+                # show the default clef placeholder in that case.
+                if pm is None:
+                    pm = draw_default_cover(28, 4)
+                item.setIcon(QIcon(pm))
             align = Qt.AlignmentFlag.AlignVCenter | (
                 Qt.AlignmentFlag.AlignRight if col in (C_LEN, C_SR, C_BD, C_TYP)
                 else Qt.AlignmentFlag.AlignLeft)
@@ -2456,16 +3994,30 @@ class TrackTable(QTableWidget):
 
     def set_covers_on(self, on: bool, tracks: list):
         self._covers_on = on
+        self._tracks_ref = tracks  # keep ref for cover_ready slot
         self.setIconSize(QSize(28, 28) if on else QSize(0, 0))
-        for r, t in enumerate(tracks):
-            if r >= self.rowCount(): break
-            item = self.item(r, C_TIT)
-            if item:
-                if on:
-                    pm = get_cover_pixmap(t.filepath, 28, 4)
-                    item.setIcon(QIcon(pm) if pm else QIcon())
-                else:
-                    item.setIcon(QIcon())
+        # Process in small chunks so the event loop stays responsive
+        CHUNK = 80
+        total = min(self.rowCount(), len(tracks))
+
+        def _process_chunk(start: int):
+            end = min(start + CHUNK, total)
+            for r in range(start, end):
+                t = tracks[r]
+                item = self.item(r, C_TIT)
+                if item:
+                    if on:
+                        pm = get_cover_pixmap(t.filepath, 28, 4)
+                        item.setIcon(QIcon(pm if pm is not None else draw_default_cover(28, 4)))
+                    else:
+                        item.setIcon(QIcon())
+            if end < total:
+                QTimer.singleShot(0, lambda s=end: _process_chunk(s))
+
+        if total > 0:
+            _process_chunk(0)
+
+
 
     def set_playing_row(self, row):
         for r in range(self.rowCount()):
@@ -2524,6 +4076,54 @@ class PlaylistPage(QWidget):
 # ══════════════════════════════════════════════════════════════════════════════
 #  Sidebar (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
+class _PlaylistRowWidget(QWidget):
+    """A sidebar playlist row: [X btn] [label] — delete button on the far left."""
+    delete_clicked = pyqtSignal()
+    select_clicked = pyqtSignal()
+
+    def __init__(self, label: str, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(44)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(6, 0, 10, 0)
+        lay.setSpacing(4)
+
+        # Accent-coloured X button on the far left
+        self._del_btn = QPushButton('✕')
+        self._del_btn.setFixedSize(22, 22)
+        self._del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._del_btn.setStyleSheet(
+            f'QPushButton {{ background:transparent; border:none; color:{ACC};'
+            f' font-size:12px; font-weight:bold; border-radius:11px; padding:0; }}'
+            f'QPushButton:hover {{ background:{BG4}; color:{ACCH}; }}'
+            f'QPushButton:pressed {{ background:{BG3}; }}')
+        self._del_btn.setToolTip('Remove playlist')
+        self._del_btn.clicked.connect(self.delete_clicked)
+
+        self._lbl = QLabel(label)
+        self._lbl.setStyleSheet(f'color:{FG}; font-size:12px; background:transparent;')
+
+        lay.addWidget(self._del_btn)
+        lay.addWidget(self._lbl, 1)
+
+    def set_selected(self, on: bool):
+        c = ACC if on else FG
+        self._lbl.setStyleSheet(f'color:{c}; font-size:12px; font-weight:{"bold" if on else "normal"}; background:transparent;')
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.select_clicked.emit()
+        super().mousePressEvent(e)
+
+    def update_accent(self):
+        self._del_btn.setStyleSheet(
+            f'QPushButton {{ background:transparent; border:none; color:{ACC};'
+            f' font-size:12px; font-weight:bold; border-radius:11px; padding:0; }}'
+            f'QPushButton:hover {{ background:{BG4}; color:{ACCH}; }}'
+            f'QPushButton:pressed {{ background:{BG3}; }}')
+
+
 class Sidebar(QWidget):
     add_folder_req    = pyqtSignal()
     add_m3u_req       = pyqtSignal()
@@ -2557,7 +4157,7 @@ class Sidebar(QWidget):
 
         lbl1 = QLabel('LIBRARY'); lbl1.setObjectName('sect_lbl'); root.addWidget(lbl1)
 
-        self._lib_btn = QPushButton('  ♪  All Tracks')
+        self._lib_btn = QPushButton('  All Tracks')
         self._lib_btn.setStyleSheet(
             f'QPushButton {{ background:{BG3}; color:{ACC}; border:none;'
             f' border-left:3px solid {ACC}; border-radius:6px; text-align:left;'
@@ -2567,13 +4167,21 @@ class Sidebar(QWidget):
         root.addWidget(self._lib_btn)
 
         lbl2 = QLabel("PLAYLISTS"); lbl2.setObjectName('sect_lbl'); root.addWidget(lbl2)
-        self._list = QListWidget()
-        self._list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._list.customContextMenuRequested.connect(self._ctx_menu)
-        self._list.currentRowChanged.connect(
-            lambda r: self.source_selected.emit(r) if r >= 0 else None)
-        QScroller.grabGesture(self._list.viewport(), QScroller.ScrollerGestureType.TouchGesture)
-        root.addWidget(self._list, 1)
+
+        # Scrollable playlist list using a QScrollArea with custom row widgets
+        scroll = QScrollArea(); scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet('background:transparent; border:none;')
+        self._pl_container = QWidget(); self._pl_container.setStyleSheet('background:transparent;')
+        self._pl_layout = QVBoxLayout(self._pl_container)
+        self._pl_layout.setContentsMargins(0,0,0,0); self._pl_layout.setSpacing(0)
+        self._pl_layout.addStretch()
+        scroll.setWidget(self._pl_container)
+        root.addWidget(scroll, 1)
+
+        self._pl_rows: list = []   # list of _PlaylistRowWidget
+        self._selected_pl_idx = -1
 
         bdiv = QFrame(); bdiv.setFixedHeight(1); bdiv.setStyleSheet(f'background:{BORD};')
         root.addWidget(bdiv)
@@ -2582,7 +4190,7 @@ class Sidebar(QWidget):
         bfl = QVBoxLayout(bf); bfl.setContentsMargins(10,12,10,12); bfl.setSpacing(6)
         add_f    = QPushButton('＋  Add Folder')
         add_m    = QPushButton('＋  Import M3U / M3U8')
-        new_pl   = QPushButton('♫  Create New Playlist')
+        new_pl   = QPushButton('+ Create New Playlist')
         new_pl.setToolTip('Create an empty playlist and save as M3U8')
         refresh  = QPushButton('↺  Refresh Library')
         refresh.setToolTip('Rescan all saved folders')
@@ -2592,16 +4200,47 @@ class Sidebar(QWidget):
         bfl.addWidget(add_f); bfl.addWidget(add_m); bfl.addWidget(new_pl); bfl.addWidget(refresh)
         root.addWidget(bf)
 
-    def add_playlist(self, label):   self._list.addItem(f'  {label}')
-    def remove_playlist(self, idx):  self._list.takeItem(idx)
+    def add_playlist(self, label: str):
+        row = _PlaylistRowWidget(label)
+        idx = len(self._pl_rows)
+        self._pl_rows.append(row)
+        # Insert before the trailing stretch
+        self._pl_layout.insertWidget(self._pl_layout.count() - 1, row)
+        row.select_clicked.connect(lambda i=idx: self._on_select(i))
+        row.delete_clicked.connect(lambda i=idx: self._on_delete_clicked(i))
 
-    def _ctx_menu(self, pos):
-        item = self._list.itemAt(pos)
-        if not item: return
-        m = QMenu(self)
-        m.addAction('Remove').triggered.connect(
-            lambda: self.remove_req.emit(self._list.row(item)))
-        m.exec(self._list.viewport().mapToGlobal(pos))
+    def remove_playlist(self, idx: int):
+        if not (0 <= idx < len(self._pl_rows)): return
+        row = self._pl_rows.pop(idx)
+        self._pl_layout.removeWidget(row); row.deleteLater()
+        # Re-wire indices for remaining rows
+        for i, r in enumerate(self._pl_rows):
+            try: r.select_clicked.disconnect()
+            except Exception: pass
+            try: r.delete_clicked.disconnect()
+            except Exception: pass
+            r.select_clicked.connect(lambda _i=i: self._on_select(_i))
+            r.delete_clicked.connect(lambda _i=i: self._on_delete_clicked(_i))
+        if self._selected_pl_idx >= len(self._pl_rows):
+            self._selected_pl_idx = -1
+
+    def _on_select(self, idx: int):
+        if self._selected_pl_idx >= 0 and self._selected_pl_idx < len(self._pl_rows):
+            self._pl_rows[self._selected_pl_idx].set_selected(False)
+        self._selected_pl_idx = idx
+        self._pl_rows[idx].set_selected(True)
+        self.source_selected.emit(idx)
+
+    def _on_delete_clicked(self, idx: int):
+        if not (0 <= idx < len(self._pl_rows)): return
+        name = self._pl_rows[idx]._lbl.text()
+        reply = QMessageBox.question(
+            self, 'Remove Playlist',
+            f'Remove "{name}" from the player?\n(Files will not be deleted)',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
+            self.remove_req.emit(idx)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2830,19 +4469,24 @@ class ControlBar(QFrame):
 
         self.btn_blackout = QPushButton('⬛'); self.btn_blackout.setObjectName('icon_btn')
         self.btn_blackout.setToolTip('Dim Screen (OLED protection)')
-        self.btn_eq = QPushButton('🎚️'); self.btn_eq.setObjectName('icon_btn')
+        self.btn_eq = QPushButton('EQ'); self.btn_eq.setObjectName('icon_btn')
         self.btn_eq.setToolTip('Equalizer')
+        self.btn_lyrics = QPushButton('≡'); self.btn_lyrics.setObjectName('icon_btn')
+        self.btn_lyrics.setToolTip('Lyrics')
+        self.btn_lyrics.setCheckable(True)
         self.btn_fullscreen = _FullscreenBtn(self)
         self.btn_fullscreen.setObjectName('icon_btn')
         self.btn_fullscreen.setToolTip('Fullscreen')
-        self.btn_settings = QPushButton('⚙');  self.btn_settings.setObjectName('icon_btn')
+        self.btn_settings = QPushButton('...');  self.btn_settings.setObjectName('icon_btn')
         self.btn_settings.setToolTip('Settings')
-        for b in (self.btn_blackout, self.btn_eq, self.btn_fullscreen, self.btn_settings):
+        for b in (self.btn_blackout, self.btn_eq, self.btn_lyrics,
+                  self.btn_fullscreen, self.btn_settings):
             b.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.btn_eq.clicked.connect(self._toggle_eq)
         self.btn_fullscreen.clicked.connect(self._toggle_fullscreen)
         self.btn_settings.clicked.connect(self._toggle_settings)
         rl.addWidget(self.btn_blackout); rl.addWidget(self.btn_eq)
+        rl.addWidget(self.btn_lyrics)
         rl.addWidget(self.btn_fullscreen); rl.addWidget(self.btn_settings)
         row2.addWidget(right, 3)
         root.addLayout(row2)
@@ -2893,10 +4537,52 @@ class ControlBar(QFrame):
             pop.brightness_changed.connect(self._on_brightness_change)
             pop.cover_toggled.connect(self._on_cover_toggle)
             pop.accent_changed.connect(self._on_accent_change)
+            pop.lyrics_fetch_toggled.connect(self._on_lyrics_fetch_toggle)
+            pop.cover_fetch_toggled.connect(self._on_cover_fetch_btn)
+            pop.tag_fetch_toggled.connect(self._on_tag_fetch_btn)
             if not self._player.has_spectrum:
                 pop._viz_sw.setEnabled(False); pop._log_sw.setEnabled(False)
             self._settings_popup = pop
         return self._settings_popup
+
+    @property
+    def lyrics_fetch_enabled(self) -> bool:
+        pop = self._settings_popup
+        return pop.lyrics_fetch_on() if pop else True
+
+    @property
+    def cover_fetch_enabled(self) -> bool:
+        pop = self._settings_popup
+        return pop.cover_fetch_on() if pop else True
+
+    def _on_lyrics_fetch_toggle(self, on: bool): pass  # LyricsPanel reads ctrlbar flag
+
+    def _on_cover_fetch_btn(self):
+        """Open the CoverFetchPopup — triggered by the Settings button."""
+        win = self.window()
+        pages = []
+        if hasattr(win, '_lib_page') and win._lib_page:
+            pages = [win._lib_page] + list(getattr(win, '_playlists', []))
+        all_tracks = list(win._lib_page.tracks) if hasattr(win, '_lib_page') and win._lib_page else []
+        if not all_tracks:
+            QMessageBox.information(win, 'No Tracks', 'Add a folder to the library first.')
+            return
+        if self._settings_popup: self._settings_popup.hide()
+        dlg = CoverFetchPopup(all_tracks, pages, self, parent=win)
+        dlg.exec()
+
+    def _on_tag_fetch_btn(self):
+        """Open the TagFetchPopup — triggered by the Settings button."""
+        win = self.window()
+        all_tracks = list(win._lib_page.tracks) if hasattr(win, '_lib_page') and win._lib_page else []
+        if not all_tracks:
+            QMessageBox.information(win, 'No Tracks', 'Add a folder to the library first.')
+            return
+        if self._settings_popup: self._settings_popup.hide()
+        dlg = TagFetchPopup(all_tracks, parent=win)
+        # When tags are written, refresh the Track objects in all pages
+        dlg.tags_updated.connect(lambda fp, tags: win._on_tags_fetched(fp, tags))
+        dlg.exec()
 
     def _toggle_fullscreen(self):
         win = self.window()
@@ -2933,6 +4619,10 @@ class ControlBar(QFrame):
         pop.set_brightness(bright); self._on_brightness_change(bright)
         cover = cfg.get('cover_on', True)
         pop.set_cover(cover); self._on_cover_toggle(cover)
+        pop.set_lyrics_fetch(cfg.get('lyrics_fetch_on', True))
+        _cf = cfg.get('cover_fetch_on', True)
+        pop.set_cover_fetch(_cf)
+        global _cover_fetch_on; _cover_fetch_on = _cf
         self._player.set_volume(cfg.get('volume', 80) / 100)
 
         # EQ popup profiles and default state
@@ -2956,7 +4646,9 @@ class ControlBar(QFrame):
         cfg.update({'volume': pop.volume(), 'viz_delay_ms': pop.delay(),
                     'viz_on': pop.viz_on(), 'log_on': pop.log_on(),
                     'inertia': pop.inertia(), 'brightness': pop.brightness(),
-                    'cover_on': pop.cover_on(), 'accent_color': pop.accent_color()})
+                    'cover_on': pop.cover_on(), 'accent_color': pop.accent_color(),
+                    'lyrics_fetch_on': pop.lyrics_fetch_on(),
+                    'cover_fetch_on': pop.cover_fetch_on()})
         eq_pop = self._ensure_eq_popup()
         cfg['eq_profiles'] = eq_pop.get_profiles()
         default_bands, default_enabled = eq_pop.get_default()
@@ -3019,7 +4711,7 @@ class ControlBar(QFrame):
         self._cover_lbl.setVisible(on)
         if on and self._cur_track:
             pm = get_cover_pixmap(self._cur_track.filepath, 64, 8)
-            self._cover_lbl.setPixmap(pm if pm else QPixmap())
+            self._cover_lbl.setPixmap(pm if pm is not None else draw_default_cover(64, 8))
         # Propagate to main window via signal
         self.cover_on_changed.emit(on)
 
@@ -3085,7 +4777,8 @@ class ControlBar(QFrame):
 
     def _on_press(self):   self._seeking = True
     def _on_release(self):
-        if self._dur_ms > 0: self._player.seek(int(self._seek.value()*self._dur_ms/1000))
+        if self._dur_ms > 0 and self._player.has_pipe:
+            self._player.seek(int(self._seek.value() * self._dur_ms / 1000))
         self._seeking = False
 
     def _on_moved(self, val):
@@ -3104,11 +4797,13 @@ class ControlBar(QFrame):
         self._dur_ms = int(t.duration*1000); self._lbl_tot.setText(t.dur_str())
         self._frame_queue.clear()
         for i in range(VIZ_BANDS): self._spec[i] = MIN_DB
-        # Update cover thumbnail (opacity via QGraphicsOpacityEffect)
+        # Update cover thumbnail — always show whatever is in cache (or default)
         if self._cover_lbl.isVisible():
             pm = get_cover_pixmap(t.filepath, 64, 8)
-            self._cover_lbl.setPixmap(pm if pm else QPixmap())
+            self._cover_lbl.setPixmap(pm if pm is not None else draw_default_cover(64, 8))
         self._cur_track = t
+
+
 
     def set_play_icon(self, playing: bool):
         self.btn_play.setText('⏸' if playing else '▶')
@@ -3135,12 +4830,15 @@ class MainWindow(QMainWindow):
         self._shuffle:      bool = False
         self._scan_threads: List[ScanThread] = []
         self._known_paths:  set  = set()
+        self._cover_locked_paths: set = set()
+        self._cur_track_mw: Track = None
         self._blackout = BlackoutOverlay()
 
         self._build_ui()
         self._connect_signals()
         self._load_config()
         self._mpris = MprisServer(self._player, self)
+
 
     def _build_ui(self):
         central = QWidget(); self.setCentralWidget(central)
@@ -3161,25 +4859,32 @@ class MainWindow(QMainWindow):
         rl.addWidget(cbar)
 
         self._tabs = QTabWidget()
-        self._tabs.setTabsClosable(True)
-        self._tabs.tabCloseRequested.connect(self._close_tab)
+        self._tabs.setTabsClosable(False)   # Tabs are never shown for playlists
+        self._tabs.tabBar().setVisible(False)   # Hide tab bar entirely; nav via sidebar
         rl.addWidget(self._tabs, 1)
         body.addWidget(right)
-        body.setStretchFactor(0,0); body.setStretchFactor(1,1); body.setSizes([230, 1050])
+
+        # ctrlbar created just before root.addWidget; use late binding
+        self._lyrics_panel = LyricsPanel(self._player, ctrlbar=None)
+        self._lyrics_panel.setVisible(False)
+        body.addWidget(self._lyrics_panel)
+
+        body.setStretchFactor(0, 0); body.setStretchFactor(1, 1); body.setStretchFactor(2, 0)
+        body.setSizes([230, 1050, 0])
         root.addWidget(body, 1)
 
         self._lib_page = PlaylistPage(label='Library')
         self._lib_page.play_track.connect(self._play_from_page)
         self._lib_page.ctx_requested.connect(self._show_ctx_menu)
-        self._tabs.addTab(self._lib_page, '♪  Library')
-        self._tabs.tabBar().setTabButton(0, QTabBar.ButtonPosition.RightSide, None)
+        self._tabs.addTab(self._lib_page, '  Library')
         self._cur_page = self._lib_page
 
         self._ctrlbar = ControlBar(self._player)
+        self._lyrics_panel._ctrlbar = self._ctrlbar
         root.addWidget(self._ctrlbar)
         self._status = self.statusBar()
-
-        self._tabs.tabBar().tabBarClicked.connect(self._update_tab_close_buttons)
+        # Tab bar hidden; update count when tab changes programmatically
+        self._tabs.currentChanged.connect(self._on_tab_change)
 
     def _install_close_btn(self, idx: int):
         if idx == 0: return
@@ -3201,7 +4906,6 @@ class MainWindow(QMainWindow):
 
         self._player.sig_end.connect(self._on_track_end)
         self._player.sig_err.connect(lambda e: self._status.showMessage(f'Error: {e}', 5000))
-
         self._ctrlbar.btn_play.clicked.connect(self._play_pause)
         self._ctrlbar.btn_prev.clicked.connect(self._prev_track)
         self._ctrlbar.btn_next.clicked.connect(self._next_track)
@@ -3211,14 +4915,37 @@ class MainWindow(QMainWindow):
         # Feed track info + position updates to the overlay
         self._player.sig_pos.connect(
             lambda ms: self._blackout.set_pos(ms, self._player.duration_ms()))
-        self._tabs.currentChanged.connect(self._on_tab_change)
         self._ctrlbar.cover_on_changed.connect(self._on_cover_toggle)
         self._ctrlbar.accent_changed.connect(self._on_accent_refresh)
+        self._ctrlbar.btn_lyrics.clicked.connect(self._toggle_lyrics)
+        self._player.sig_pos.connect(self._lyrics_panel.on_position)
+        self._lyrics_panel.status_msg.connect(
+            lambda m: self._status.showMessage(m, 0) if m else self._status.clearMessage())
+        self._lyrics_panel.seek_requested.connect(self._player.seek)
 
     def _on_cover_toggle(self, on: bool):
         self._lib_page.set_covers_on(on)
         for pl in self._playlists:
             pl.set_covers_on(on)
+
+    def _on_tags_fetched(self, fp: str, tags: dict):
+        """Called by TagFetchPopup when tags for a track have been written to disk.
+        Refreshes the Track object in every page that contains this filepath."""
+        if not tags: return
+        for page in [self._lib_page] + self._playlists:
+            if page is None: continue
+            for i, t in enumerate(page.tracks):
+                if t.filepath == fp:
+                    # Apply only the fields that were updated
+                    if tags.get('title'):  t.title  = tags['title']
+                    if tags.get('artist'): t.artist = tags['artist']
+                    if tags.get('album'):  t.album  = tags['album']
+                    page.table._fill_row(i, t)
+                    # If this is the currently playing track, update the control bar
+                    if (self._cur_page is page and self._cur_idx == i):
+                        self._ctrlbar.set_track(t)
+                        self.setWindowTitle(f'{t.title}  —  BlackPlayer')
+                    break
 
     def _on_accent_refresh(self, color: str):
         logo = self._sidebar.findChild(QLabel, 'logo_lbl')
@@ -3246,9 +4973,34 @@ class MainWindow(QMainWindow):
                f'QPushButton#ctrl:pressed {{ background:rgba(50,50,50,180); }}')
         for b in (self._ctrlbar.btn_shuf, self._ctrlbar.btn_prev, self._ctrlbar.btn_next):
             b.setStyleSheet(_ts)
+        self._lyrics_panel.set_accent(ACC)
+        for row in self._sidebar._pl_rows:
+            row.update_accent()
         for page in [self._lib_page] + self._playlists:
             if page and page.playing_idx >= 0:
                 page.table.set_playing_row(page.playing_idx)
+
+    def _open_lyrics_panel_from_config(self):
+        """Restore lyrics panel open state from config."""
+        if not self._lyrics_panel.isVisible():
+            self._toggle_lyrics()
+
+    def _toggle_lyrics(self, _checked=False):
+        panel = self._lyrics_panel
+        body  = self.findChild(QSplitter)
+        if not body: return
+        vis = panel.isVisible()
+        panel.setVisible(not vis)
+        self._ctrlbar.btn_lyrics.setChecked(not vis)
+        sizes = body.sizes()
+        if not vis:   # opening
+            total = sum(sizes)
+            body.setSizes([sizes[0], max(100, total - sizes[0] - 290), 290])
+            if self._cur_track_mw:
+                deferred = not self.isActiveWindow() or self._blackout.isVisible()
+                panel.set_track(self._cur_track_mw, deferred=deferred)
+        else:         # closing
+            body.setSizes([sizes[0], sizes[1] + sizes[2], 0])
 
     # --- Context menu with tag editing ---
     def _show_ctx_menu(self, src_page, row, pos):
@@ -3278,34 +5030,100 @@ class MainWindow(QMainWindow):
 
     def _edit_tags(self, page, row):
         track = page.tracks[row]
-        dlg = TagEditDialog(track, self)
+        dlg = TagEditDialog(track, locked_paths=self._cover_locked_paths, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             new_title, new_artist, new_album = dlg.get_tags()
+            cover_action, cover_bytes, cover_locked = dlg.get_cover_result()
+            # Update cover lock set
+            if cover_locked:
+                self._cover_locked_paths.add(track.filepath)
+                _cover_locked_set.add(track.filepath)
+            else:
+                self._cover_locked_paths.discard(track.filepath)
+                _cover_locked_set.discard(track.filepath)
             # Write to file using mutagen
             try:
                 af = MutagenFile(track.filepath, easy=False)
                 if af is None:
                     self._status.showMessage('Could not open file', 3000)
                     return
-                # Update tags based on file type
                 ext = Path(track.filepath).suffix.lower()
-                if ext == '.mp3':
-                    if new_title: af['TIT2'] = new_title
-                    if new_artist: af['TPE1'] = new_artist
-                    if new_album: af['TALB'] = new_album
-                elif ext in ('.flac', '.opus', '.ogg'):
-                    if new_title: af['title'] = new_title
-                    if new_artist: af['artist'] = new_artist
-                    if new_album: af['album'] = new_album
-                elif ext in ('.m4a', '.aac'):
-                    if new_title: af['\xa9nam'] = new_title
-                    if new_artist: af['\xa9ART'] = new_artist
-                    if new_album: af['\xa9alb'] = new_album
-                else:
-                    if new_title: af['title'] = new_title
-                    if new_artist: af['artist'] = new_artist
-                    if new_album: af['album'] = new_album
+
+                # Helper to delete a tag
+                def del_tag(key):
+                    if ext == '.mp3':
+                        if key in af.tags:
+                            del af.tags[key]
+                    elif ext in ('.flac', '.ogg', '.opus'):
+                        if key in af.tags:
+                            del af.tags[key]
+                    elif ext in ('.m4a', '.aac'):
+                        if key in af.tags:
+                            del af.tags[key]
+                    else:
+                        if key in af.tags:
+                            del af.tags[key]
+
+                # Update title
+                if new_title == '':
+                    # Delete title tag
+                    if ext == '.mp3': del_tag('TIT2')
+                    elif ext in ('.flac', '.ogg', '.opus'): del_tag('title')
+                    elif ext in ('.m4a', '.aac'): del_tag('\xa9nam')
+                    else: del_tag('title')
+                elif new_title != track.title:
+                    if ext == '.mp3': af['TIT2'] = new_title
+                    elif ext in ('.flac', '.ogg', '.opus'): af['title'] = new_title
+                    elif ext in ('.m4a', '.aac'): af['\xa9nam'] = new_title
+                    else: af['title'] = new_title
+
+                # Update artist
+                if new_artist == '':
+                    if ext == '.mp3': del_tag('TPE1')
+                    elif ext in ('.flac', '.ogg', '.opus'): del_tag('artist')
+                    elif ext in ('.m4a', '.aac'): del_tag('\xa9ART')
+                    else: del_tag('artist')
+                elif new_artist != track.artist:
+                    if ext == '.mp3': af['TPE1'] = new_artist
+                    elif ext in ('.flac', '.ogg', '.opus'): af['artist'] = new_artist
+                    elif ext in ('.m4a', '.aac'): af['\xa9ART'] = new_artist
+                    else: af['artist'] = new_artist
+
+                # Update album
+                if new_album == '':
+                    if ext == '.mp3': del_tag('TALB')
+                    elif ext in ('.flac', '.ogg', '.opus'): del_tag('album')
+                    elif ext in ('.m4a', '.aac'): del_tag('\xa9alb')
+                    else: del_tag('album')
+                elif new_album != track.album:
+                    if ext == '.mp3': af['TALB'] = new_album
+                    elif ext in ('.flac', '.ogg', '.opus'): af['album'] = new_album
+                    elif ext in ('.m4a', '.aac'): af['\xa9alb'] = new_album
+                    else: af['album'] = new_album
+
                 af.save()
+
+                # Handle cover changes
+                if cover_action == 'set' and cover_bytes:
+                    embed_cover_bytes(track.filepath, cover_bytes)
+                    # Invalidate disk cache for this track
+                    _cover_cache.pop((track.filepath, 64, 8), None)
+                    _cover_cache.pop((track.filepath, 28, 4), None)
+                elif cover_action == 'remove':
+                    try:
+                        af2 = MutagenFile(track.filepath, easy=False)
+                        ext2 = Path(track.filepath).suffix.lower()
+                        if af2 and af2.tags:
+                            if ext2 == '.mp3': af2.tags.delall('APIC')
+                            elif ext2 == '.flac': af2.clear_pictures()
+                            elif ext2 in ('.m4a','.aac'): af2.tags.pop('covr', None)
+                            elif ext2 in ('.ogg','.opus'):
+                                af2.tags.pop('metadata_block_picture', None)
+                            af2.save()
+                        _cover_cache.pop((track.filepath, 64, 8), None)
+                        _cover_cache.pop((track.filepath, 28, 4), None)
+                    except Exception: pass
+
                 # Re-read metadata to get updated track
                 updated_track = read_metadata(track.filepath)
                 # Update in source page
@@ -3361,9 +5179,6 @@ class MainWindow(QMainWindow):
         page.ctx_requested.connect(self._show_ctx_menu)
         self._playlists.append(page)
         ti = self._tabs.addTab(page, f' {name} ')
-        close_btn = TabCloseButton()
-        close_btn.clicked.connect(lambda checked=False, idx=ti: self._close_tab(idx))
-        self._tabs.tabBar().setTabButton(ti, QTabBar.ButtonPosition.RightSide, close_btn)
         self._sidebar.add_playlist(name)
         self._tabs.setCurrentIndex(ti)
         # Remember the m3u8 path so "Refresh" can re-scan it
@@ -3422,10 +5237,6 @@ class MainWindow(QMainWindow):
         self._playlists.append(page)
         ti = self._tabs.addTab(page, f' {label} ')
         self._sidebar.add_playlist(label)
-        close_btn = TabCloseButton()
-        tab_idx = ti
-        close_btn.clicked.connect(lambda checked=False, idx=tab_idx: self._close_tab(idx))
-        self._tabs.tabBar().setTabButton(ti, QTabBar.ButtonPosition.RightSide, close_btn)
         self._tabs.setCurrentIndex(ti)
         self._rebuild_library()
         self._status.showMessage(f'"{label}" — {len(tracks)} tracks loaded', 4000)
@@ -3449,10 +5260,14 @@ class MainWindow(QMainWindow):
     def _remove_playlist(self, idx):
         if not (0 <= idx < len(self._playlists)): return
         page = self._playlists.pop(idx)
+        # Remove tab first (fast)
         for i in range(self._tabs.count()):
-            if self._tabs.widget(i) is page: self._tabs.removeTab(i); break
+            if self._tabs.widget(i) is page:
+                self._tabs.removeTab(i)
+                break
         self._sidebar.remove_playlist(idx)
-        self._rebuild_library(); self._save_config()
+        # Defer library rebuild so the UI unblocks immediately
+        QTimer.singleShot(0, lambda: (self._rebuild_library(), self._save_config()))
 
     def _close_tab(self, tab_idx):
         if tab_idx == 0: return
@@ -3476,6 +5291,10 @@ class MainWindow(QMainWindow):
         t = tracks[self._cur_idx]
         self._player.load(t.filepath)
         self._ctrlbar.set_track(t); self._ctrlbar.set_play_icon(True)
+        self._cur_track_mw = t
+        if self._lyrics_panel.isVisible():
+            deferred = not self.isActiveWindow() or self._blackout.isVisible()
+            self._lyrics_panel.set_track(t, deferred=deferred)
         self._cur_page.set_playing(self._cur_idx)
         self.setWindowTitle(f'{t.title}  —  BlackPlayer')
         self._status.showMessage(f'▶  {t.artist}  —  {t.title}', 0)
@@ -3535,6 +5354,9 @@ class MainWindow(QMainWindow):
                 self._ctrlbar.set_focus_paused(True)
             elif self.isActiveWindow() or eq_vis or set_vis:
                 self._ctrlbar.set_focus_paused(False)
+                # Trigger deferred lyrics fetch if panel is visible
+                if self._lyrics_panel.isVisible():
+                    self._lyrics_panel.on_focus_gained()
 
     # --- Search / tab ---
     def _apply_search(self, q):
@@ -3558,6 +5380,8 @@ class MainWindow(QMainWindow):
             cfg['playlists'] = [{'label': pl.label, 'tracks': [t.filepath for t in pl.tracks]}
                                  for pl in self._playlists]
             cfg['known_paths'] = list(self._known_paths)
+            cfg['lyrics_panel_open'] = self._lyrics_panel.isVisible()
+            cfg['cover_locked_paths'] = list(self._cover_locked_paths)
             CONFIG_PATH.write_text(json.dumps(cfg, indent=2, ensure_ascii=False))
             # Write M3U8 for user-created playlists (those with _m3u_path attribute)
             for pl in self._playlists:
@@ -3575,7 +5399,9 @@ class MainWindow(QMainWindow):
             print(f'Config save error: {e}')
 
     def _load_config(self):
-        if not CONFIG_PATH.exists(): return
+        if not CONFIG_PATH.exists():
+            QTimer.singleShot(0, self._rebuild_library)
+            return
         try:
             data = json.loads(CONFIG_PATH.read_text())
             for kp in data.get('known_paths', []):
@@ -3592,15 +5418,17 @@ class MainWindow(QMainWindow):
                 page.set_tracks(tracks)
                 self._playlists.append(page)
                 ti = self._tabs.addTab(page, f' {label} ')
-                close_btn = TabCloseButton()
-                tab_idx = ti
-                close_btn.clicked.connect(lambda checked=False, idx=tab_idx: self._close_tab(idx))
-                self._tabs.tabBar().setTabButton(ti, QTabBar.ButtonPosition.RightSide, close_btn)
                 self._sidebar.add_playlist(label)
+            self._cover_locked_paths = set(data.get('cover_locked_paths', []))
+            _cover_locked_set.update(self._cover_locked_paths)
+            _cover_fetch_on = data.get('cover_fetch_on', True)
             self._ctrlbar.init_from_config(data)
-            self._rebuild_library()
+            if data.get('lyrics_panel_open', False):
+                QTimer.singleShot(200, self._open_lyrics_panel_from_config)
         except Exception as e:
             print(f'Config load error: {e}')
+        finally:
+            QTimer.singleShot(0, self._rebuild_library)
 
     # --- Keyboard ---
     def keyPressEvent(self, e):
