@@ -241,15 +241,21 @@ class ToggleSwitch(QWidget):
     def paintEvent(self, _):
         p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
         t = self._anim
-        base_on = QColor(ACC)
+        # Darker, desaturated accent for the track when ON
+        _acc = QColor(ACC)
+        h, s, v, _ = _acc.getHsvF()
+        _track_on = QColor(); _track_on.setHsvF(h, s*0.55, v*0.38)
+        _border_on = QColor(); _border_on.setHsvF(h, s*0.65, v*0.55)
+        _off = QColor(0x20, 0x20, 0x20)
+        _boff = QColor(0x3e, 0x3e, 0x3e)
         tc = QColor(
-            int(0x20 + t*(base_on.red()-0x20)),
-            int(0x20 + t*(base_on.green()-0x20)),
-            int(0x20 + t*(base_on.blue()-0x20)))
+            int(_off.red()   + t*(_track_on.red()   - _off.red())),
+            int(_off.green() + t*(_track_on.green() - _off.green())),
+            int(_off.blue()  + t*(_track_on.blue()  - _off.blue())))
         bc = QColor(
-            int(0x3e + t*(base_on.red()-0x3e)),
-            int(0x3e + t*(base_on.green()-0x3e)),
-            int(0x3e + t*(base_on.blue()-0x3e)))
+            int(_boff.red()   + t*(_border_on.red()   - _boff.red())),
+            int(_boff.green() + t*(_border_on.green() - _boff.green())),
+            int(_boff.blue()  + t*(_border_on.blue()  - _boff.blue())))
         p.setPen(QPen(bc, 1.5)); p.setBrush(QBrush(tc))
         p.drawRoundedRect(QRectF(0,(self.height()-self.H)/2,self.W,self.H), self.R, self.R)
         kx = 3 + t*(self.W-2*self.R-2); ky = (self.height()-self.H)/2+(self.H-self.R*2)/2
@@ -349,13 +355,11 @@ class SettingsPopup(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName('settings_popup')
-        # Tool window: stays open when OSK or other windows get focus
-        self.setWindowFlags(
-            Qt.WindowType.Tool |
-            Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.WindowStaysOnTopHint)
+        # Child widget (no top-level flags) — works on Wayland with move()
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
-        self.setAutoFillBackground(False)
+        self.setAutoFillBackground(True)
+        self.hide()  # start hidden
+        self._hidden_by_outside = False
         # Close when user clicks outside the popup
         QApplication.instance().installEventFilter(self)
 
@@ -490,20 +494,33 @@ class SettingsPopup(QFrame):
                 e.type() == QEvent.Type.MouseButtonPress and
                 QApplication.activePopupWidget() is None and
                 obj is not self and
-                not (isinstance(obj, QWidget) and self.isAncestorOf(obj)) and
-                not self.rect().contains(self.mapFromGlobal(
-                    e.globalPosition().toPoint()))):
-            self.hide()
+                not (isinstance(obj, QWidget) and self.isAncestorOf(obj))):
+            # For child widget: map click to our coords
+            try:
+                gpt = e.globalPosition().toPoint()
+                local = self.mapFromGlobal(gpt)
+                if not self.rect().contains(local):
+                    self.hide()
+                    self._hidden_by_outside = True
+            except Exception:
+                self.hide()
+                self._hidden_by_outside = True
         return False  # never swallow events
 
     def show_above(self, btn: QWidget):
+        # Position as a child widget inside the main window — works on Wayland
+        win = btn.window()
+        if self.parent() is not win:
+            self.setParent(win)
+            self.setWindowFlags(Qt.WindowType.Widget)  # ensure child
         self.adjustSize()
-        gpos = btn.mapToGlobal(QPoint(0, 0))
-        x = gpos.x() + btn.width() // 2 - self.width() // 2
-        y = gpos.y() - self.height() - 6   # butonun hemen üstü, 6 piksel boşluk
-        screen = QApplication.primaryScreen().availableGeometry()
-        x = max(screen.left() + 4, min(x, screen.right() - self.width() - 4))
-        y = max(screen.top() + 4, y)
+        # btn position relative to the main window
+        btn_in_win = btn.mapTo(win, QPoint(0, 0))
+        x = btn_in_win.x() + btn.width()//2 - self.width()//2
+        y = btn_in_win.y() - self.height() - 6
+        # clamp inside window
+        x = max(4, min(x, win.width()  - self.width()  - 4))
+        y = max(4, min(y, win.height() - self.height() - 4))
         self.move(x, y)
         self.show()
         self.raise_()
@@ -710,6 +727,7 @@ class EqPopup(QFrame):
         QApplication.instance().installEventFilter(self)
 
         self._bands = []          # list of (freq, gain, Q)
+        self._hidden_by_outside = False
         self._enabled = True
         self._profiles = {}       # name -> list of bands
         self._current_profile = ""
@@ -1018,6 +1036,7 @@ class EqPopup(QFrame):
                 not self.rect().contains(
                     self.mapFromGlobal(e.globalPosition().toPoint()))):
             self.hide()
+            self._hidden_by_outside = True
         return False
 
     def show_center(self):
@@ -1476,45 +1495,100 @@ def _rounded_pixmap(pm: QPixmap, size: int, radius: int) -> QPixmap:
     return out
 
 
+def _default_cover_disk_path(acc: str, size: int, radius: int) -> Path:
+    safe = acc.lstrip('#')
+    return CONFIG_PATH.parent / f'default_cover_{safe}_{size}_{radius}.jpg'
+
+
 def draw_default_cover(size: int, radius: int) -> QPixmap:
+    # Check disk cache first
+    disk = _default_cover_disk_path(ACC, size, radius)
+    if disk.exists():
+        pm = QPixmap()
+        if pm.load(str(disk)): return pm
+    # Render
     pm = QPixmap(size, size)
     pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    # Black rounded background
     p.setBrush(QBrush(QColor(BG)))
     p.setPen(Qt.PenStyle.NoPen)
     p.drawRoundedRect(0, 0, size, size, radius, radius)
-    # Draw treble clef character in red
     p.setPen(QPen(QColor(ACC), 1))
     font = p.font()
-    font.setPixelSize(int(size * 0.7))
-    # Try to use a font that contains the treble clef
-    font.setFamily("Segoe UI Symbol, FreeSerif, Symbola, Arial Unicode MS")
+    font.setPixelSize(int(size * 0.67))
+    font.setFamily('Segoe UI Symbol, FreeSerif, Symbola, Arial Unicode MS')
     p.setFont(font)
-    p.drawText(QRect(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, "𝄞")
+    p.drawText(QRect(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, '𝄞')
     p.end()
+    # Save to disk cache
+    try:
+        disk.parent.mkdir(parents=True, exist_ok=True)
+        pm.save(str(disk), 'JPEG', 90)
+    except Exception:
+        pass
     return pm
 
 
+_COVER_DISK_DIR = CONFIG_PATH.parent / 'covers'
+_COVER_JPEG_QUALITY = 80
+
+
+def _cover_disk_key(fp: str, size: int, radius: int) -> str:
+    """Hash of filepath+mtime to detect stale covers."""
+    import hashlib
+    try:
+        mtime = str(os.path.getmtime(fp))
+    except Exception:
+        mtime = '0'
+    return hashlib.sha1(f'{fp}:{mtime}:{size}:{radius}'.encode()).hexdigest()
+
+
 def get_cover_pixmap(fp: str, size: int = 48, radius: int = 4) -> Optional[QPixmap]:
-    """Return cached rounded QPixmap or a default clef pixmap if no cover."""
+    """Return cached rounded QPixmap (memory → disk → extract → default)."""
     key = (fp, size, radius)
     if key in _cover_cache:
         return _cover_cache[key]
 
+    # L2: disk cache
+    dkey = _cover_disk_key(fp, size, radius)
+    disk_path = _COVER_DISK_DIR / f'{dkey}.jpg'
+    if disk_path.exists():
+        pm = QPixmap()
+        if pm.load(str(disk_path)):
+            _cover_cache[key] = pm
+            return pm
+
+    # L3: extract from audio file
     data = extract_cover_bytes(fp)
     if data:
         raw = QPixmap()
         if raw.loadFromData(data):
             pm = _rounded_pixmap(raw, size, radius)
             _cover_cache[key] = pm
+            try:
+                _COVER_DISK_DIR.mkdir(parents=True, exist_ok=True)
+                pm.save(str(disk_path), 'JPEG', _COVER_JPEG_QUALITY)
+            except Exception:
+                pass
             return pm
 
     # No embedded cover – use default clef image
     default = draw_default_cover(size, radius)
     _cover_cache[key] = default
     return default
+
+
+def _clear_cover_disk_cache():
+    """Wipe disk cover cache (call on rescan/new source added)."""
+    global _cover_cache
+    _cover_cache.clear()
+    try:
+        if _COVER_DISK_DIR.exists():
+            for f in _COVER_DISK_DIR.glob('*.jpg'):
+                f.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 def scan_folder(folder: str) -> List[Track]:
@@ -2791,6 +2865,11 @@ class ControlBar(QFrame):
 
     def _toggle_eq(self):
         pop = self._ensure_eq_popup()
+        # If popup was just hidden by clicking outside (which hit the button),
+        # consume that flag and do nothing (leave closed)
+        if pop._hidden_by_outside:
+            pop._hidden_by_outside = False
+            return
         # Load current EQ state from player
         pop.set_bands(self._player._eq_bands, self._player._eq_enabled)
         if pop.isVisible():
@@ -2805,7 +2884,7 @@ class ControlBar(QFrame):
     # --- Settings popup ---
     def _ensure_settings_popup(self):
         if self._settings_popup is None:
-            pop = SettingsPopup(parent=self.window())
+            pop = SettingsPopup()
             pop.viz_toggled.connect(self._on_viz_toggle)
             pop.log_toggled.connect(self._on_log_toggle)
             pop.volume_changed.connect(lambda v: self._player.set_volume(v/100))
@@ -2830,6 +2909,9 @@ class ControlBar(QFrame):
 
     def _toggle_settings(self):
         pop = self._ensure_settings_popup()
+        if pop._hidden_by_outside:
+            pop._hidden_by_outside = False
+            return
         if pop.isVisible(): pop.hide()
         else: pop.show_above(self.btn_settings)
 
@@ -2928,6 +3010,10 @@ class ControlBar(QFrame):
         QApplication.instance().setStyleSheet(SS)
         self._on_brightness_change(getattr(self, '_brightness_v', 40))
         _cover_cache.clear()
+        # Remove stale default cover disk cache (will regenerate with new color)
+        for f in CONFIG_PATH.parent.glob('default_cover_*.jpg'):
+            try: f.unlink()
+            except Exception: pass
         self.accent_changed.emit(color)
     def _on_cover_toggle(self, on: bool):
         self._cover_lbl.setVisible(on)
@@ -3281,7 +3367,7 @@ class MainWindow(QMainWindow):
         self._sidebar.add_playlist(name)
         self._tabs.setCurrentIndex(ti)
         # Remember the m3u8 path so "Refresh" can re-scan it
-        self._known_paths.add(m3u_path)
+        self._known_paths.add(m3u_path); _clear_cover_disk_cache()
         # Store m3u path on page for later save
         page._m3u_path = m3u_path
         self._status.showMessage(f'"{name}" playlist created — {m3u_path}', 5000)
@@ -3290,7 +3376,7 @@ class MainWindow(QMainWindow):
     def _add_folder_dialog(self):
         f = QFileDialog.getExistingDirectory(self, 'Select Music Folder', str(Path.home()))
         if f:
-            self._known_paths.add(f); self._scan_path(f, False)
+            self._known_paths.add(f); _clear_cover_disk_cache(); self._scan_path(f, False)
 
     def _import_m3u_dialog(self):
         f, _ = QFileDialog.getOpenFileName(self, 'Import Playlist', str(Path.home()),
@@ -3302,6 +3388,7 @@ class MainWindow(QMainWindow):
         if not self._known_paths:
             self._status.showMessage('No folders added.', 3000); return
         self._status.showMessage('Refreshing library…')
+        _clear_cover_disk_cache()
         for path in list(self._known_paths):
             if not path.endswith(('.m3u', '.m3u8')):
                 self._scan_path(path, False, refresh=True)
