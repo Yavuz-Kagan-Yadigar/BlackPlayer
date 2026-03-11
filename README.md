@@ -1,7 +1,7 @@
 # BlackPlayer
 Best Music Player for OLED and Touchscreens on Linux
 
-Features: Parametric EQ, OLED burn-in protection overlay, universal accent color,optimized for touch scrolling and hold left click, toggleable spectrum visualization with custom inertia and logaritmic/linear scale, visualiaztion delay to match timing with bluetooth headphones, toggleable cover art, MPRIS2 desktop enviroment ingetration, basic tag editing, m3u8 and folder playlist support, visualization stops when overlay is active or focus lost to reduce CPU usage.
+Features: Parametric EQ, OLED burn-in protection overlay; cover, lyrics and tag fetching and embedidng to music files, local and fetched synced and plain lyrics support, universal accent color,optimized for touch scrolling and hold left click, toggleable spectrum visualization with custom inertia and logaritmic/linear scale, visualiaztion delay to match timing with bluetooth headphones, toggleable cover art, MPRIS2 desktop enviroment ingetration, basic tag editing, m3u8 and folder playlist support, visualization stops when overlay is active or focus lost to reduce CPU usage.
 
 Dependencies:
 Python 3, PyQt6 (PyQt6.QtWidgets, PyQt6.QtCore, PyQt6.QtGui), gobject-introspection (gi.repository), GStreamer (Gst, Gio, GLib), gst-plugins-base (GStreamer base plugins), gst-plugins-good (GStreamer good plugins), gst-plugins-bad (GStreamer bad plugins, spectrum, audioiirfilter), Mutagen (mutagen), PipeWire (pipewire, pipewire-alsa, pipewire-pulse, pipewire-gstreamer), google-noto-music-fonts
@@ -10,5 +10,5 @@ Disclaimer: Entire code is written by AI, I do not suggest to use as referance c
 
 Demo: https://youtu.be/AL9ERhcby9M
 Touch Test: https://youtu.be/bZH5Fd8Pe58
-![2026-03-10_22-43_1](https://github.com/user-attachments/assets/a5fa583d-a90a-4a74-a910-7dbb225809b7)
-![2026-03-10_22-44](https://github.com/user-attachments/assets/306f89ff-ab70-4b0f-8c33-e73ced51d96a)
+![2026-03-11_19-12](https://github.com/user-attachments/assets/24415b61-643b-466d-a707-de5fa6d7fbe2)
+![2026-03-11_19-12_1](https://github.com/user-attachments/assets/f06f080b-9997-44dc-be96-606092f632f9)![2026-03-11_18-21](https://github.com/user-attachments/assets/a547d84e-fb47-49b0-b082-8a26314b633e) ![2026-03-11_19-15](https://github.com/user-attachments/assets/ff96a01e-3b5a-408c-a950-87a396d76373)
