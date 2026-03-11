@@ -8,7 +8,7 @@ Python 3, PyQt6 (PyQt6.QtWidgets, PyQt6.QtCore, PyQt6.QtGui), gobject-introspect
 
 Disclaimer: Entire code is written by AI, I do not suggest to use as referance code. It might have inefficiencies, bugs, vulnabilities. Just sharing in case somebody wantto use it since most of music players does not go well with touchscreen.
 
-Demo: https://youtu.be/AL9ERhcby9M
+Demo: https://youtu.be/GNyc2-AzvIw
 Touch Test: https://youtu.be/bZH5Fd8Pe58
 ![2026-03-11_19-12](https://github.com/user-attachments/assets/24415b61-643b-466d-a707-de5fa6d7fbe2)
 ![2026-03-11_19-12_1](https://github.com/user-attachments/assets/f06f080b-9997-44dc-be96-606092f632f9)![2026-03-11_18-21](https://github.com/user-attachments/assets/a547d84e-fb47-49b0-b082-8a26314b633e) ![2026-03-11_19-15](https://github.com/user-attachments/assets/ff96a01e-3b5a-408c-a950-87a396d76373)
