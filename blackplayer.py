@@ -4604,7 +4604,7 @@ class ControlBar(QFrame):
     def init_from_config(self, cfg: dict):
         # Settings popup
         pop = self._ensure_settings_popup()
-        pop.set_volume(cfg.get('volume', 80))
+        volume = int(float(cfg.get('volume', 80)))     
         pop.set_delay(cfg.get('viz_delay_ms', 0))
         pop.set_inertia(cfg.get('inertia', 50))
         viz = cfg.get('viz_on', True); log = cfg.get('log_on', True)
